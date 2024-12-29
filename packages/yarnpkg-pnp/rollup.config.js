@@ -3,8 +3,14 @@ import resolve              from '@rollup/plugin-node-resolve';
 import path                 from 'path';
 import esbuild              from 'rollup-plugin-esbuild';
 import {defineConfig}       from 'rollup';
+import semver               from 'semver';
 import {brotliCompressSync} from 'zlib';
 
+import pkg                  from './package.json';
+
+/**
+ * @returns {import('rollup').Plugin}
+ */
 function wrapOutput() {
   return {
     name: `wrap-output`,
@@ -18,6 +24,39 @@ function wrapOutput() {
       outputBundle.code = `let hook;\n\nmodule.exports = () => {\n  if (typeof hook === \`undefined\`)\n    hook = require('zlib').brotliDecompressSync(Buffer.from('${brotliCompressSync(
         outputBundle.code.replace(/\r\n/g, `\n`),
       ).toString(`base64`)}', 'base64')).toString();\n\n  return hook;\n};\n`;
+    },
+  };
+}
+
+/**
+ * Before https://github.com/nodejs/node/pull/46904 using a custom global URL class
+ * wasn't supported by `fileURLToPath` so this plugin ensures that for Node.js < 20
+ * we always use the builtin URL class.
+ * TODO: Remove this plugin when dropping support for Node.js < 20
+ * @returns {import('rollup').Plugin}
+ */
+function importURL() {
+  return {
+    name: `import-url`,
+    resolveId(id) {
+      if (id === `virtual:url`) return `\0virtual:url`;
+
+      return undefined;
+    },
+    load(id) {
+      if (id === `\0virtual:url`) {
+        return `
+          import { URL as nodeURL } from 'url';
+          export const URL = Number(process.versions.node.split('.', 1)[0]) < 20 ? nodeURL : globalThis.URL;
+        `;
+      }
+      return undefined;
+    },
+    transform(code, id) {
+      if (code.includes(`new URL`) || code.includes(`instanceof URL`))
+        return `import {URL} from 'virtual:url';\n${code}`;
+
+      return undefined;
     },
   };
 }
@@ -42,7 +81,7 @@ export default defineConfig([
       }),
       esbuild({
         tsconfig: false,
-        target: `node14`,
+        target: `node${semver.minVersion(pkg.engines.node).version}`,
         define: {
           document: `undefined`,
           XMLHttpRequest: `undefined`,
@@ -50,6 +89,7 @@ export default defineConfig([
         },
       }),
       cjs({transformMixedEsModules: true, extensions: [`.js`, `.ts`]}),
+      importURL(),
       wrapOutput(),
     ],
   },
@@ -59,7 +99,11 @@ export default defineConfig([
       file: `./sources/esm-loader/built-loader.js`,
       format: `esm`,
       generatedCode: `es2015`,
+      banner: `/* eslint-disable */\n// @ts-nocheck\n`,
     },
+    external: [
+      `../.pnp.cjs`,
+    ],
     plugins: [
       resolve({
         extensions: [`.mjs`, `.js`, `.ts`, `.tsx`, `.json`],
@@ -69,7 +113,7 @@ export default defineConfig([
       }),
       esbuild({
         tsconfig: false,
-        target: `node14`,
+        target: `node${semver.minVersion(pkg.engines.node).version}`,
         define: {
           document: `undefined`,
           XMLHttpRequest: `undefined`,
@@ -77,6 +121,7 @@ export default defineConfig([
         },
       }),
       cjs({requireReturnsDefault: `preferred`}),
+      importURL(),
       wrapOutput(),
     ],
   },
@@ -97,7 +142,7 @@ export default defineConfig([
         }),
         esbuild({
           tsconfig: false,
-          target: `node14`,
+          target: `node${semver.minVersion(pkg.engines.node).version}`,
           define: {
             document: `undefined`,
             XMLHttpRequest: `undefined`,

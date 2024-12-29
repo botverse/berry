@@ -82,7 +82,7 @@ export default class InitCommand extends BaseCommand {
     if (!xfs.existsSync(this.context.cwd))
       await xfs.mkdirPromise(this.context.cwd, {recursive: true});
 
-    const lockfilePath = ppath.join(this.context.cwd, configuration.get(`lockfileFilename`));
+    const lockfilePath = ppath.join(this.context.cwd, Filename.lockfile);
     if (!xfs.existsSync(lockfilePath))
       await xfs.writeFilePromise(lockfilePath, ``);
 
@@ -182,7 +182,7 @@ export default class InitCommand extends BaseCommand {
         ``,
         `# Swap the comments on the following lines if you wish to use zero-installs`,
         `# In that case, don't forget to run \`yarn config set enableGlobalCache false\`!`,
-        `# Documentation here: https://yarnpkg.com/features/zero-installs`,
+        `# Documentation here: https://yarnpkg.com/features/caching#zero-installs`,
         ``,
         `#!.yarn/cache`,
         `.pnp.*`,

@@ -1,5 +1,6 @@
+import {Dirent, DirentNoPath, ReaddirOptions}                                                                                                        from '@yarnpkg/fslib';
 import {WatchOptions, WatchCallback, Watcher, Dir, Stats, BigIntStats, StatSyncOptions, StatOptions}                                                 from '@yarnpkg/fslib';
-import {FakeFS, MkdirOptions, RmdirOptions, WriteFileOptions, OpendirOptions}                                                                        from '@yarnpkg/fslib';
+import {FakeFS, MkdirOptions, RmdirOptions, RmOptions, WriteFileOptions, OpendirOptions}                                                             from '@yarnpkg/fslib';
 import {CreateReadStreamOptions, CreateWriteStreamOptions, BasePortableFakeFS, ExtractHintOptions, WatchFileCallback, WatchFileOptions, StatWatcher} from '@yarnpkg/fslib';
 import {NodeFS}                                                                                                                                      from '@yarnpkg/fslib';
 import {opendir}                                                                                                                                     from '@yarnpkg/fslib';
@@ -294,8 +295,12 @@ export class ZipFS extends BasePortableFakeFS {
         else if (rc > size)
           throw new Error(`Overread`);
 
-        const memory = this.libzip.HEAPU8.subarray(buffer, buffer + size);
-        return Buffer.from(memory);
+        let result = Buffer.from(this.libzip.HEAPU8.subarray(buffer, buffer + size));
+
+        if (process.env.YARN_IS_TEST_ENV && process.env.YARN_ZIP_DATA_EPILOGUE)
+          result = Buffer.concat([result, Buffer.from(process.env.YARN_ZIP_DATA_EPILOGUE)]);
+
+        return result;
       } finally {
         this.libzip.free(buffer);
       }
@@ -612,16 +617,16 @@ export class ZipFS extends BasePortableFakeFS {
     return this.statImpl(`stat '${p}'`, resolvedP, opts);
   }
 
-  async fstatPromise(fd: number): Promise<Stats>
-  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>
-  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>
+  async fstatPromise(fd: number): Promise<Stats>;
+  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>;
+  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
   async fstatPromise(fd: number, opts?: {bigint: boolean}) {
     return this.fstatSync(fd, opts);
   }
 
-  fstatSync(fd: number): Stats
-  fstatSync(fd: number, opts: {bigint: true}): BigIntStats
-  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats
+  fstatSync(fd: number): Stats;
+  fstatSync(fd: number, opts: {bigint: true}): BigIntStats;
+  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats;
   fstatSync(fd: number, opts?: {bigint: boolean}) {
     const entry = this.fds.get(fd);
     if (typeof entry === `undefined`)
@@ -965,10 +970,10 @@ export class ZipFS extends BasePortableFakeFS {
     return (attributes & constants.S_IFMT) === constants.S_IFLNK;
   }
 
-  private getFileSource(index: number): Buffer
-  private getFileSource(index: number, opts: {asyncDecompress: false}): Buffer
-  private getFileSource(index: number, opts: {asyncDecompress: true}): Promise<Buffer>
-  private getFileSource(index: number, opts: {asyncDecompress: boolean}): Promise<Buffer> | Buffer
+  private getFileSource(index: number): Buffer;
+  private getFileSource(index: number, opts: {asyncDecompress: false}): Buffer;
+  private getFileSource(index: number, opts: {asyncDecompress: true}): Promise<Buffer>;
+  private getFileSource(index: number, opts: {asyncDecompress: boolean}): Promise<Buffer> | Buffer;
   private getFileSource(index: number, opts: {asyncDecompress: boolean} = {asyncDecompress: false}): Promise<Buffer> | Buffer {
     const cachedFileSource = this.fileSources.get(index);
     if (typeof cachedFileSource !== `undefined`)
@@ -1348,6 +1353,34 @@ export class ZipFS extends BasePortableFakeFS {
 
     this.deleteEntry(p, index);
   }
+  async rmPromise(p: PortablePath, opts?: RmOptions) {
+    return this.rmSync(p, opts);
+  }
+
+  rmSync(p: PortablePath, {recursive = false}: RmOptions = {}) {
+    if (this.readOnly)
+      throw errors.EROFS(`rm '${p}'`);
+
+    if (recursive) {
+      this.removeSync(p);
+      return;
+    }
+
+    const resolvedP = this.resolveFilename(`rm '${p}'`, p);
+
+    const directoryListing = this.listings.get(resolvedP);
+    if (!directoryListing)
+      throw errors.ENOTDIR(`rm '${p}'`);
+
+    if (directoryListing.size > 0)
+      throw errors.ENOTEMPTY(`rm '${p}'`);
+
+    const index = this.entries.get(resolvedP);
+    if (typeof index === `undefined`)
+      throw errors.EINVAL(`rm '${p}'`);
+
+    this.deleteEntry(p, index);
+  }
 
   private hydrateDirectory(resolvedP: PortablePath) {
     const index = this.libzip.dir.add(this.zip, ppath.relative(PortablePath.root, resolvedP));
@@ -1421,10 +1454,10 @@ export class ZipFS extends BasePortableFakeFS {
     return encoding ? data.toString(encoding) : data;
   }
 
-  private readFileBuffer(p: FSPath<PortablePath>): Buffer
-  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: false}): Buffer
-  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: true}): Promise<Buffer>
-  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: boolean}): Promise<Buffer> | Buffer
+  private readFileBuffer(p: FSPath<PortablePath>): Buffer;
+  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: false}): Buffer;
+  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: true}): Promise<Buffer>;
+  private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: boolean}): Promise<Buffer> | Buffer;
   private readFileBuffer(p: FSPath<PortablePath>, opts: {asyncDecompress: boolean} = {asyncDecompress: false}): Buffer | Promise<Buffer> {
     if (typeof p === `number`)
       p = this.fdToPath(p, `read`);
@@ -1447,19 +1480,31 @@ export class ZipFS extends BasePortableFakeFS {
     return this.getFileSource(entry, opts);
   }
 
-  async readdirPromise(p: PortablePath): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: false} | null): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: true}): Promise<Array<statUtils.DirEntry>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: boolean}): Promise<Array<Filename> | Array<statUtils.DirEntry>>;
-  async readdirPromise(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Promise<Array<string> | Array<statUtils.DirEntry>> {
+  async readdirPromise(p: PortablePath, opts?: null): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Promise<Array<DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Promise<Array<DirentNoPath | Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Promise<Array<Dirent<PortablePath>>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Promise<Array<Dirent<PortablePath> | DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts?: ReaddirOptions | null): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>> {
     return this.readdirSync(p, opts as any);
   }
 
-  readdirSync(p: PortablePath): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: false} | null): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: true}): Array<statUtils.DirEntry>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: boolean}): Array<Filename> | Array<statUtils.DirEntry>;
-  readdirSync(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Array<string> | Array<statUtils.DirEntry> {
+  readdirSync(p: PortablePath, opts?: null): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Array<DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Array<DirentNoPath | Filename>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Array<Dirent<PortablePath>>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Array<Dirent<PortablePath> | PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Array<Dirent<PortablePath> | DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Array<Dirent<PortablePath> | DirentNoPath | PortablePath>;
+  readdirSync(p: PortablePath, opts?: ReaddirOptions | null): Array<Dirent<PortablePath> | DirentNoPath | PortablePath> {
     const resolvedP = this.resolveFilename(`scandir '${p}'`, p);
     if (!this.entries.has(resolvedP) && !this.listings.has(resolvedP))
       throw errors.ENOENT(`scandir '${p}'`);
@@ -1468,15 +1513,56 @@ export class ZipFS extends BasePortableFakeFS {
     if (!directoryListing)
       throw errors.ENOTDIR(`scandir '${p}'`);
 
-    const entries = [...directoryListing];
-    if (!opts?.withFileTypes)
-      return entries;
+    if (opts?.recursive) {
+      if (opts?.withFileTypes) {
+        const entries = Array.from(directoryListing, name => {
+          return Object.assign(this.statImpl(`lstat`, ppath.join(p, name)), {
+            name,
+            path: PortablePath.dot,
+          });
+        });
 
-    return entries.map(name => {
-      return Object.assign(this.statImpl(`lstat`, ppath.join(p, name)), {
-        name,
+        for (const entry of entries) {
+          if (!entry.isDirectory())
+            continue;
+
+          const subPath = ppath.join(entry.path, entry.name);
+          const subListing = this.listings.get(ppath.join(resolvedP, subPath))!;
+
+          for (const child of subListing) {
+            entries.push(Object.assign(this.statImpl(`lstat`, ppath.join(p, subPath, child)), {
+              name: child,
+              path: subPath,
+            }));
+          }
+        }
+
+        return entries;
+      } else {
+        const entries: Array<PortablePath> = [...directoryListing];
+
+        for (const subPath of entries) {
+          const subListing = this.listings.get(ppath.join(resolvedP, subPath));
+          if (typeof subListing === `undefined`)
+            continue;
+
+          for (const child of subListing) {
+            entries.push(ppath.join(subPath, child));
+          }
+        }
+
+        return entries;
+      }
+    } else if (opts?.withFileTypes) {
+      return Array.from(directoryListing, name => {
+        return Object.assign(this.statImpl(`lstat`, ppath.join(p, name)), {
+          name,
+          path: undefined,
+        });
       });
-    });
+    } else {
+      return [...directoryListing];
+    }
   }
 
   async readlinkPromise(p: PortablePath) {

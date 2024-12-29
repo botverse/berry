@@ -1,7 +1,6 @@
 import {Hooks as CoreHooks, Plugin, Project, SettingsType, WindowsLinkType} from '@yarnpkg/core';
 import {Filename, PortablePath, npath, ppath, xfs}                          from '@yarnpkg/fslib';
 import {Hooks as StageHooks}                                                from '@yarnpkg/plugin-stage';
-import semver                                                               from 'semver';
 import {pathToFileURL}                                                      from 'url';
 
 import {PnpLinker}                                                          from './PnpLinker';
@@ -25,28 +24,35 @@ export const quotePathIfNeeded = (path: string) => {
   return /\s/.test(path) ? JSON.stringify(path) : path;
 };
 
-async function setupScriptEnvironment(project: Project, env: {[key: string]: string}, makePathWrapper: (name: string, argv0: string, args: Array<string>) => Promise<void>) {
+async function setupScriptEnvironment(project: Project, env: NodeJS.ProcessEnv, makePathWrapper: (name: string, argv0: string, args: Array<string>) => Promise<void>) {
+  // We still support .pnp.js files to improve multi-project compatibility.
+  // TODO: Drop the question mark in the RegExp after .pnp.js files stop being used.
+  // TODO: Support `-r` as an alias for `--require` (in all packages)
+  const pnpRegularExpression = /\s*--require\s+\S*\.pnp\.c?js\s*/g;
+  const esmLoaderExpression = /\s*--experimental-loader\s+\S*\.pnp\.loader\.mjs\s*/;
+
+  const nodeOptions = (env.NODE_OPTIONS ?? ``)
+    .replace(pnpRegularExpression, ` `)
+    .replace(esmLoaderExpression, ` `)
+    .trim();
+
+  // We remove the PnP hook from NODE_OPTIONS because the process can have
+  // NODE_OPTIONS set while changing linkers, which affects build scripts.
+  if (project.configuration.get(`nodeLinker`) !== `pnp`) {
+    // When set to an empty string, some tools consider it as explicitly set
+    // to the empty value, and do not set their own value.
+    env.NODE_OPTIONS = nodeOptions ? nodeOptions : undefined;
+    return;
+  }
+
   const pnpPath = getPnpPath(project);
   let pnpRequire = `--require ${quotePathIfNeeded(npath.fromPortablePath(pnpPath.cjs))}`;
 
   if (xfs.existsSync(pnpPath.esmLoader))
     pnpRequire = `${pnpRequire} --experimental-loader ${pathToFileURL(npath.fromPortablePath(pnpPath.esmLoader)).href}`;
 
-  if (pnpPath.cjs.includes(` `) && semver.lt(process.versions.node, `12.0.0`))
-    throw new Error(`Expected the build location to not include spaces when using Node < 12.0.0 (${process.versions.node})`);
-
   if (xfs.existsSync(pnpPath.cjs)) {
-    let nodeOptions = env.NODE_OPTIONS || ``;
-
-    // We still support .pnp.js files to improve multi-project compatibility.
-    // TODO: Drop the question mark in the RegExp after .pnp.js files stop being used.
-    const pnpRegularExpression = /\s*--require\s+\S*\.pnp\.c?js\s*/g;
-    const esmLoaderExpression = /\s*--experimental-loader\s+\S*\.pnp\.loader\.mjs\s*/;
-    nodeOptions = nodeOptions.replace(pnpRegularExpression, ` `).replace(esmLoaderExpression, ` `).trim();
-
-    nodeOptions = nodeOptions ? `${pnpRequire} ${nodeOptions}` : pnpRequire;
-
-    env.NODE_OPTIONS = nodeOptions;
+    env.NODE_OPTIONS = nodeOptions ? `${pnpRequire} ${nodeOptions}` : pnpRequire;
   }
 }
 
@@ -80,7 +86,7 @@ const plugin: Plugin<CoreHooks & StageHooks> = {
   },
   configuration: {
     nodeLinker: {
-      description: `The linker used for installing Node packages, one of: "pnp", "node-modules"`,
+      description: `The linker used for installing Node packages, one of: "pnp", "pnpm", or "node-modules"`,
       type: SettingsType.STRING,
       default: `pnp`,
     },

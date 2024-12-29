@@ -1,7 +1,6 @@
 {
   "name": "@yarnpkg/types",
-  "version": "4.0.0-rc.42",
-  "stableVersion": "3.4.1",
+  "version": "4.0.0",
   "license": "BSD-2-Clause",
   "main": "./sources/index.ts",
   "exports": {
@@ -28,6 +27,10 @@
     "/lib/**/*"
   ],
   "engines": {
-    "node": ">=14.15.0"
-  }
+    "node": ">=18.12.0"
+  },
+  "dependencies": {
+    "tslib": "^2.4.0"
+  },
+  "stableVersion": "4.0.0"
 }
