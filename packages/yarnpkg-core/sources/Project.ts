@@ -7,6 +7,7 @@ import {structuredPatch}                                                from 'di
 import pick                                                             from 'lodash/pick';
 import pLimit                                                           from 'p-limit';
 import semver                                                           from 'semver';
+import internal                                                         from 'stream';
 import {promisify}                                                      from 'util';
 import v8                                                               from 'v8';
 import zlib                                                             from 'zlib';
@@ -14,16 +15,17 @@ import zlib                                                             from 'zl
 import {Cache, CacheOptions}                                            from './Cache';
 import {Configuration}                                                  from './Configuration';
 import {Fetcher, FetchOptions}                                          from './Fetcher';
-import {Installer, BuildDirective, BuildType, InstallStatus}            from './Installer';
+import {Installer, BuildDirective, BuildDirectiveType, InstallStatus}   from './Installer';
 import {LegacyMigrationResolver}                                        from './LegacyMigrationResolver';
 import {Linker, LinkOptions}                                            from './Linker';
 import {LockfileResolver}                                               from './LockfileResolver';
-import {DependencyMeta, Manifest}                                       from './Manifest';
+import {DependencyMeta, Manifest, type PeerDependencyMeta}              from './Manifest';
 import {MessageName}                                                    from './MessageName';
 import {MultiResolver}                                                  from './MultiResolver';
 import {Report, ReportError}                                            from './Report';
 import {ResolveOptions, Resolver}                                       from './Resolver';
 import {RunInstallPleaseResolver}                                       from './RunInstallPleaseResolver';
+import {SUPPORTS_GROUPS, StreamReport}                                  from './StreamReport';
 import {ThrowReport}                                                    from './ThrowReport';
 import {WorkspaceResolver}                                              from './WorkspaceResolver';
 import {Workspace}                                                      from './Workspace';
@@ -42,12 +44,15 @@ import {IdentHash, DescriptorHash, LocatorHash, PackageExtensionStatus} from './
 // When upgraded, the lockfile entries have to be resolved again (but the specific
 // versions are still pinned, no worry). Bump it when you change the fields within
 // the Package type; no more no less.
-const LOCKFILE_VERSION = 7;
+export const LOCKFILE_VERSION = miscUtils.parseInt(
+  process.env.YARN_LOCKFILE_VERSION_OVERRIDE ??
+  8,
+);
 
 // Same thing but must be bumped when the members of the Project class changes (we
 // don't recommend our users to check-in this file, so it's fine to bump it even
 // between patch or minor releases).
-const INSTALL_STATE_VERSION = 2;
+const INSTALL_STATE_VERSION = 3;
 
 const MULTIPLE_KEYS_REGEXP = / *, */g;
 const TRAILING_SLASH_REGEXP = /\/$/;
@@ -149,6 +154,7 @@ const INSTALL_STATE_FIELDS = {
   ] as const,
 
   restoreBuildState: [
+    `skippedBuilds`,
     `storedBuildState`,
   ] as const,
 };
@@ -160,11 +166,62 @@ type RestoreInstallStateOpts = {
 // Just a type that's the union of all the fields declared in `INSTALL_STATE_FIELDS`
 type InstallState = Pick<Project, typeof INSTALL_STATE_FIELDS[keyof typeof INSTALL_STATE_FIELDS][number]>;
 
+export type PeerRequestNode = {
+  requester: Locator;
+  descriptor: Descriptor;
+  meta: PeerDependencyMeta | undefined;
+
+  children: Map<DescriptorHash, PeerRequestNode>;
+};
+
+export type PeerRequirementNode = {
+  subject: Locator;
+  ident: Ident;
+  provided: Descriptor;
+  root: boolean;
+
+  requests: Map<DescriptorHash, PeerRequestNode>;
+
+  hash: string;
+};
+
 export type PeerRequirement = {
   subject: LocatorHash;
   requested: Ident;
   rootRequester: LocatorHash;
   allRequesters: Array<LocatorHash>;
+};
+
+export enum PeerWarningType {
+  NotProvided,
+  NotCompatible,
+  NodeNotProvided,
+  NodeNotCompatible,
+}
+
+export type PeerWarning = {
+  type: PeerWarningType.NotProvided;
+  subject: Locator;
+  requested: Ident;
+  requester: Ident;
+  hash: string;
+} | {
+  type: PeerWarningType.NotCompatible;
+  subject: Locator;
+  requested: Ident;
+  requester: Ident;
+  version: string;
+  hash: string;
+  requirementCount: number;
+} | {
+  type: PeerWarningType.NodeNotProvided;
+  node: PeerRequirementNode;
+  hash: string;
+} | {
+  type: PeerWarningType.NodeNotCompatible;
+  node: PeerRequirementNode;
+  range: string | null;
+  hash: string;
 };
 
 const makeLockfileChecksum = (normalizedContent: string) =>
@@ -202,11 +259,13 @@ export class Project {
   public disabledLocators: Set<LocatorHash> = new Set();
   public originalPackages: Map<LocatorHash, Package> = new Map();
   public optionalBuilds: Set<LocatorHash> = new Set();
+  public skippedBuilds: Set<LocatorHash> = new Set();
 
   /**
    * If true, the data contained within `originalPackages` are from a different
    * lockfile version and need to be refreshed.
    */
+  public lockfileLastVersion: number | null = null;
   public lockfileNeedsRefresh: boolean = false;
 
   /**
@@ -216,6 +275,8 @@ export class Project {
    * The map keys are 6 hexadecimal characters except the first one, always `p`.
    */
   public peerRequirements: Map<string, PeerRequirement> = new Map();
+  public peerWarnings: Array<PeerWarning> = [];
+  public peerRequirementNodes: Map<string, PeerRequirementNode> = new Map();
 
   /**
    * Contains whatever data the linkers (cf `Linker.ts`) want to persist
@@ -298,7 +359,7 @@ export class Project {
 
     this.lockFileChecksum = null;
 
-    const lockfilePath = ppath.join(this.cwd, this.configuration.get(`lockfileFilename`));
+    const lockfilePath = ppath.join(this.cwd, Filename.lockfile);
     const defaultLanguageName = this.configuration.get(`defaultLanguageName`);
 
     if (xfs.existsSync(lockfilePath)) {
@@ -314,6 +375,7 @@ export class Project {
         const lockfileVersion = parsed.__metadata.version;
         const cacheKey = parsed.__metadata.cacheKey;
 
+        this.lockfileLastVersion = lockfileVersion;
         this.lockfileNeedsRefresh = lockfileVersion < LOCKFILE_VERSION;
 
         for (const key of Object.keys(parsed)) {
@@ -369,6 +431,8 @@ export class Project {
             this.storedResolutions.set(descriptor.descriptorHash, locator.locatorHash);
           }
         }
+      } else if (content.includes(`yarn lockfile v1`)) {
+        this.lockfileLastVersion = -1;
       }
     }
   }
@@ -402,14 +466,14 @@ export class Project {
   }
 
   private addWorkspace(workspace: Workspace) {
-    const dup = this.workspacesByIdent.get(workspace.locator.identHash);
+    const dup = this.workspacesByIdent.get(workspace.anchoredLocator.identHash);
     if (typeof dup !== `undefined`)
-      throw new Error(`Duplicate workspace name ${structUtils.prettyIdent(this.configuration, workspace.locator)}: ${npath.fromPortablePath(workspace.cwd)} conflicts with ${npath.fromPortablePath(dup.cwd)}`);
+      throw new Error(`Duplicate workspace name ${structUtils.prettyIdent(this.configuration, workspace.anchoredLocator)}: ${npath.fromPortablePath(workspace.cwd)} conflicts with ${npath.fromPortablePath(dup.cwd)}`);
 
     this.workspaces.push(workspace);
 
     this.workspacesByCwd.set(workspace.cwd, workspace);
-    this.workspacesByIdent.set(workspace.locator.identHash, workspace);
+    this.workspacesByIdent.set(workspace.anchoredLocator.identHash, workspace);
   }
 
   get topLevelWorkspace() {
@@ -522,7 +586,7 @@ export class Project {
     if (structUtils.isVirtualLocator(locator))
       locator = structUtils.devirtualizeLocator(locator);
 
-    if (workspace.locator.locatorHash !== locator.locatorHash && workspace.anchoredLocator.locatorHash !== locator.locatorHash)
+    if (workspace.anchoredLocator.locatorHash !== locator.locatorHash)
       return null;
 
     return workspace;
@@ -537,39 +601,39 @@ export class Project {
     return workspace;
   }
 
+  private deleteDescriptor(descriptorHash: DescriptorHash) {
+    this.storedResolutions.delete(descriptorHash);
+    this.storedDescriptors.delete(descriptorHash);
+  }
+
+  private deleteLocator(locatorHash: LocatorHash) {
+    this.originalPackages.delete(locatorHash);
+    this.storedPackages.delete(locatorHash);
+    this.accessibleLocators.delete(locatorHash);
+  }
+
   forgetResolution(descriptor: Descriptor): void;
   forgetResolution(locator: Locator): void;
   forgetResolution(dataStructure: Descriptor | Locator): void {
-    const deleteDescriptor = (descriptorHash: DescriptorHash) => {
-      this.storedResolutions.delete(descriptorHash);
-      this.storedDescriptors.delete(descriptorHash);
-    };
-
-    const deleteLocator = (locatorHash: LocatorHash) => {
-      this.originalPackages.delete(locatorHash);
-      this.storedPackages.delete(locatorHash);
-      this.accessibleLocators.delete(locatorHash);
-    };
-
     if (`descriptorHash` in dataStructure) {
       const locatorHash = this.storedResolutions.get(dataStructure.descriptorHash);
 
-      deleteDescriptor(dataStructure.descriptorHash);
+      this.deleteDescriptor(dataStructure.descriptorHash);
 
       // We delete unused locators
       const remainingResolutions = new Set(this.storedResolutions.values());
       if (typeof locatorHash !== `undefined` && !remainingResolutions.has(locatorHash)) {
-        deleteLocator(locatorHash);
+        this.deleteLocator(locatorHash);
       }
     }
 
     if (`locatorHash` in dataStructure) {
-      deleteLocator(dataStructure.locatorHash);
+      this.deleteLocator(dataStructure.locatorHash);
 
       // We delete all of the descriptors that have been resolved to the locator
       for (const [descriptorHash, locatorHash] of this.storedResolutions) {
         if (locatorHash === dataStructure.locatorHash) {
-          deleteDescriptor(descriptorHash);
+          this.deleteDescriptor(descriptorHash);
         }
       }
     }
@@ -577,6 +641,16 @@ export class Project {
 
   forgetTransientResolutions() {
     const resolver = this.configuration.makeResolver();
+
+    const reverseLookup = new Map<LocatorHash, Set<DescriptorHash>>();
+
+    for (const [descriptorHash, locatorHash] of this.storedResolutions.entries()) {
+      let descriptorHashes = reverseLookup.get(locatorHash);
+      if (!descriptorHashes)
+        reverseLookup.set(locatorHash, descriptorHashes = new Set());
+
+      descriptorHashes.add(descriptorHash);
+    }
 
     for (const pkg of this.originalPackages.values()) {
       let shouldPersistResolution: boolean;
@@ -587,7 +661,15 @@ export class Project {
       }
 
       if (!shouldPersistResolution) {
-        this.forgetResolution(pkg);
+        this.deleteLocator(pkg.locatorHash);
+
+        const descriptors = reverseLookup.get(pkg.locatorHash);
+        if (descriptors) {
+          reverseLookup.delete(pkg.locatorHash);
+          for (const descriptorHash of descriptors) {
+            this.deleteDescriptor(descriptorHash);
+          }
+        }
       }
     }
   }
@@ -650,7 +732,15 @@ export class Project {
   }
 
   async loadUserConfig() {
-    const configPath = ppath.join(this.cwd, `yarn.config.js`);
+    // TODO: We're injecting the .pnp.cjs in the environment, so that it's
+    // able to required the project dependencies. It's not ideal to hardcode
+    // this logic here, but I'm not quite sure yet what would be a better place.
+    //
+    const pnpPath = ppath.join(this.cwd, `.pnp.cjs`);
+    if (await xfs.existsPromise(pnpPath))
+      miscUtils.dynamicRequire(pnpPath).setup();
+
+    const configPath = ppath.join(this.cwd, `yarn.config.cjs`);
     if (!await xfs.existsPromise(configPath))
       return null;
 
@@ -658,7 +748,9 @@ export class Project {
   }
 
   async preparePackage(originalPkg: Package, {resolver, resolveOptions}: {resolver: Resolver, resolveOptions: ResolveOptions}) {
-    const pkg = this.configuration.normalizePackage(originalPkg);
+    const packageExtensions = await this.configuration.getPackageExtensions();
+
+    const pkg = this.configuration.normalizePackage(originalPkg, {packageExtensions});
 
     for (const [identHash, descriptor] of pkg.dependencies) {
       const dependency = await this.configuration.reduceHook(hooks => {
@@ -684,6 +776,11 @@ export class Project {
 
     // Reverts the changes that have been applied to the tree because of any previous virtual resolution pass
     this.forgetVirtualResolutions();
+
+    // Keep a copy of the original packages so that we can figure out what was added / removed later
+    const initialPackages = new Map(this.originalPackages);
+
+    const addedPackages: Array<Locator> = [];
 
     // Ensures that we notice it when dependencies are added / removed from all sources coming from the filesystem
     if (!opts.lockfileOnly)
@@ -757,6 +854,12 @@ export class Project {
           throw new Error(`Assertion failed: The locator cannot be changed by the resolver (went from ${structUtils.prettyLocator(this.configuration, locator)} to ${structUtils.prettyLocator(this.configuration, originalPkg)})`);
 
         originalPackages.set(originalPkg.locatorHash, originalPkg);
+
+        // What didn't exist before is an added package
+        const existedBefore = initialPackages.delete(originalPkg.locatorHash);
+        if (!existedBefore && !this.tryWorkspaceByLocator(originalPkg))
+          addedPackages.push(originalPkg);
+
         const pkg = await this.preparePackage(originalPkg, {resolver, resolveOptions});
 
         const dependencyResolutions = miscUtils.allSettledSafe([...pkg.dependencies.values()].map(descriptor => {
@@ -866,6 +969,45 @@ export class Project {
       }
     });
 
+    // What remains is a removed package
+    const removedPackages: Array<Locator> = miscUtils.mapAndFilter(initialPackages.values(), pkg => {
+      if (this.tryWorkspaceByLocator(pkg))
+        return miscUtils.mapAndFilter.skip;
+
+      return pkg;
+    });
+
+    if (addedPackages.length > 0 || removedPackages.length > 0) {
+      const topLevelResolutions = new Set(this.workspaces.flatMap(workspace => {
+        const workspacePkg = allPackages.get(workspace.anchoredLocator.locatorHash);
+        if (!workspacePkg)
+          throw new Error(`Assertion failed: The workspace should have been resolved`);
+
+        return Array.from(workspacePkg.dependencies.values(), descriptor => {
+          const resolution = allResolutions.get(descriptor.descriptorHash);
+          if (!resolution)
+            throw new Error(`Assertion failed: The resolution should have been registered`);
+
+          return resolution;
+        });
+      }));
+
+      const sortTopLevelFirst = (locator: Locator) => topLevelResolutions.has(locator.locatorHash) ? `0` : `1`;
+      const sortByLocatorString = (locator: Locator) => structUtils.stringifyLocator(locator);
+
+      const sortedAddedPackages = miscUtils.sortMap(addedPackages, [sortTopLevelFirst, sortByLocatorString]);
+      const sortedRemovedPackages = miscUtils.sortMap(removedPackages, [sortTopLevelFirst, sortByLocatorString]);
+
+      const recommendedLength = opts.report.getRecommendedLength();
+
+      if (sortedAddedPackages.length > 0)
+        opts.report.reportInfo(MessageName.UPDATED_RESOLUTION_RECORD, `${formatUtils.pretty(this.configuration, `+`, formatUtils.Type.ADDED)} ${formatUtils.prettyTruncatedLocatorList(this.configuration, sortedAddedPackages, recommendedLength)}`);
+
+      if (sortedRemovedPackages.length > 0) {
+        opts.report.reportInfo(MessageName.UPDATED_RESOLUTION_RECORD, `${formatUtils.pretty(this.configuration, `-`, formatUtils.Type.REMOVED)} ${formatUtils.prettyTruncatedLocatorList(this.configuration, sortedRemovedPackages, recommendedLength)}`);
+      }
+    }
+
     // In this step we now create virtual packages for each package with at
     // least one peer dependency. We also use it to search for the alias
     // descriptors that aren't depended upon by anything and can be safely
@@ -874,16 +1016,19 @@ export class Project {
     const volatileDescriptors = new Set(this.resolutionAliases.values());
     const optionalBuilds = new Set(allPackages.keys());
     const accessibleLocators = new Set<LocatorHash>();
-    const peerRequirements: Project['peerRequirements'] = new Map();
+    const peerRequirements: Project[`peerRequirements`] = new Map();
+    const peerWarnings: Project[`peerWarnings`] = [];
+    const peerRequirementNodes: Project[`peerRequirementNodes`] = new Map();
 
     applyVirtualResolutionMutations({
       project: this,
-      report: opts.report,
 
       accessibleLocators,
       volatileDescriptors,
       optionalBuilds,
       peerRequirements,
+      peerWarnings,
+      peerRequirementNodes,
 
       allDescriptors,
       allResolutions,
@@ -943,9 +1088,11 @@ export class Project {
     this.originalPackages = originalPackages;
     this.optionalBuilds = optionalBuilds;
     this.peerRequirements = peerRequirements;
+    this.peerWarnings = peerWarnings;
+    this.peerRequirementNodes = peerRequirementNodes;
   }
 
-  async fetchEverything({cache, report, fetcher: userFetcher, mode}: InstallOptions) {
+  async fetchEverything({cache, report, fetcher: userFetcher, mode, persistProject = true}: InstallOptions) {
     const cacheOptions = {
       mockedPackages: this.disabledLocators,
       unstablePackages: this.conditionalLocators,
@@ -981,40 +1128,82 @@ export class Project {
 
     const limit = pLimit(FETCHER_CONCURRENCY);
 
-    await report.startCacheReport(async () => {
-      await miscUtils.allSettledSafe(locatorHashes.map(locatorHash => limit(async () => {
-        const pkg = this.storedPackages.get(locatorHash);
-        if (!pkg)
-          throw new Error(`Assertion failed: The locator should have been registered`);
+    await miscUtils.allSettledSafe(locatorHashes.map(locatorHash => limit(async () => {
+      const pkg = this.storedPackages.get(locatorHash);
+      if (!pkg)
+        throw new Error(`Assertion failed: The locator should have been registered`);
 
-        if (structUtils.isVirtualLocator(pkg))
-          return;
+      if (structUtils.isVirtualLocator(pkg))
+        return;
 
-        let fetchResult;
-        try {
-          fetchResult = await fetcher.fetch(pkg, fetcherOptions);
-        } catch (error) {
-          error.message = `${structUtils.prettyLocator(this.configuration, pkg)}: ${error.message}`;
-          report.reportExceptionOnce(error);
-          firstError = error;
-          return;
-        }
+      let fetchResult;
+      try {
+        fetchResult = await fetcher.fetch(pkg, fetcherOptions);
+      } catch (error) {
+        error.message = `${structUtils.prettyLocator(this.configuration, pkg)}: ${error.message}`;
+        report.reportExceptionOnce(error);
+        firstError = error;
+        return;
+      }
 
-        if (fetchResult.checksum != null)
-          this.storedChecksums.set(pkg.locatorHash, fetchResult.checksum);
-        else
-          this.storedChecksums.delete(pkg.locatorHash);
+      if (fetchResult.checksum != null)
+        this.storedChecksums.set(pkg.locatorHash, fetchResult.checksum);
+      else
+        this.storedChecksums.delete(pkg.locatorHash);
 
-        if (fetchResult.releaseFs) {
-          fetchResult.releaseFs();
-        }
-      }).finally(() => {
-        progress.tick();
-      })));
-    });
+      if (fetchResult.releaseFs) {
+        fetchResult.releaseFs();
+      }
+    }).finally(() => {
+      progress.tick();
+    })));
 
-    if (firstError) {
+    if (firstError)
       throw firstError;
+
+    const cleanInfo = persistProject && mode !== InstallMode.UpdateLockfile
+      ? await this.cacheCleanup({cache, report})
+      : null;
+
+    if (report.cacheMisses.size > 0 || cleanInfo) {
+      const addedSizes = await Promise.all([...report.cacheMisses].map(async locatorHash => {
+        const locator = this.storedPackages.get(locatorHash);
+        const checksum = this.storedChecksums.get(locatorHash) ?? null;
+
+        const p = cache.getLocatorPath(locator!, checksum);
+        const stat = await xfs.statPromise(p);
+
+        return stat.size;
+      }));
+
+      const finalSizeChange = addedSizes.reduce((sum, size) => sum + size, 0) - (cleanInfo?.size ?? 0);
+
+      const addedCount = report.cacheMisses.size;
+      const removedCount = cleanInfo?.count ?? 0;
+
+      const addedLine = `${miscUtils.plural(addedCount, {
+        zero: `No new packages`,
+        one: `A package was`,
+        more: `${formatUtils.pretty(this.configuration, addedCount, formatUtils.Type.NUMBER)} packages were`,
+      })} added to the project`;
+
+      const removedLine = `${miscUtils.plural(removedCount, {
+        zero: `none were`,
+        one: `one was`,
+        more: `${formatUtils.pretty(this.configuration, removedCount, formatUtils.Type.NUMBER)} were`,
+      })} removed`;
+
+      const sizeLine = finalSizeChange !== 0
+        ? ` (${formatUtils.pretty(this.configuration, finalSizeChange, formatUtils.Type.SIZE_DIFF)})`
+        : ``;
+
+      const message = removedCount > 0
+        ? addedCount > 0
+          ? `${addedLine}, and ${removedLine}${sizeLine}.`
+          : `${addedLine}, but ${removedLine}${sizeLine}.`
+        : `${addedLine}${sizeLine}.`;
+
+      report.reportInfo(MessageName.FETCH_NOT_CACHED, message);
     }
   }
 
@@ -1044,7 +1233,11 @@ export class Project {
 
     const packageLinkers: Map<LocatorHash, Linker> = new Map();
     const packageLocations: Map<LocatorHash, PortablePath | null> = new Map();
-    const packageBuildDirectives: Map<LocatorHash, { directives: Array<BuildDirective>, buildLocations: Array<PortablePath> }> = new Map();
+
+    const packageBuildDirectives: Map<LocatorHash, {
+      buildDirectives: Array<BuildDirective>;
+      buildLocations: Array<PortablePath>;
+    }> = new Map();
 
     const fetchResultsPerPackage = new Map(await miscUtils.allSettledSafe([...this.accessibleLocators].map(async locatorHash => {
       const pkg = this.storedPackages.get(locatorHash);
@@ -1055,6 +1248,9 @@ export class Project {
     })));
 
     const pendingPromises: Array<Promise<void>> = [];
+
+    const nextSkippedBuilds = new Set<LocatorHash>();
+    const skippedBuildLogs: Array<[Locator, (report: Report) => void]> = [];
 
     // Step 1: Installing the packages on the disk
 
@@ -1074,18 +1270,18 @@ export class Project {
 
       const workspace = this.tryWorkspaceByLocator(pkg);
       if (workspace !== null) {
-        const buildScripts: Array<BuildDirective> = [];
+        const buildDirectives: Array<BuildDirective> = [];
         const {scripts} = workspace.manifest;
 
         for (const scriptName of [`preinstall`, `install`, `postinstall`])
           if (scripts.has(scriptName))
-            buildScripts.push([BuildType.SCRIPT, scriptName]);
+            buildDirectives.push({type: BuildDirectiveType.SCRIPT, script: scriptName});
 
         try {
           for (const [linker, installer] of installers) {
             if (linker.supportsPackage(pkg, linkerOptions)) {
               const result = await installer.installPackage(pkg, fetchResult, {holdFetchResult});
-              if (result.buildDirective !== null) {
+              if (result.buildRequest !== null) {
                 throw new Error(`Assertion failed: Linkers can't return build directives for workspaces; this responsibility befalls to the Yarn core`);
               }
             }
@@ -1104,9 +1300,9 @@ export class Project {
         packageLocations.set(pkg.locatorHash, location);
 
         // Virtual workspaces shouldn't be built as they don't really exist
-        if (!structUtils.isVirtualLocator(pkg) && buildScripts.length > 0) {
+        if (!structUtils.isVirtualLocator(pkg) && buildDirectives.length > 0) {
           packageBuildDirectives.set(pkg.locatorHash, {
-            directives: buildScripts,
+            buildDirectives,
             buildLocations: [location],
           });
         }
@@ -1135,11 +1331,18 @@ export class Project {
         packageLinkers.set(pkg.locatorHash, linker);
         packageLocations.set(pkg.locatorHash, installStatus.packageLocation);
 
-        if (installStatus.buildDirective && installStatus.buildDirective.length > 0 && installStatus.packageLocation) {
-          packageBuildDirectives.set(pkg.locatorHash, {
-            directives: installStatus.buildDirective,
-            buildLocations: [installStatus.packageLocation],
-          });
+        if (installStatus.buildRequest && installStatus.packageLocation) {
+          if (installStatus.buildRequest.skipped) {
+            nextSkippedBuilds.add(pkg.locatorHash);
+            if (!this.skippedBuilds.has(pkg.locatorHash)) {
+              skippedBuildLogs.push([pkg, installStatus.buildRequest.explain]);
+            }
+          } else {
+            packageBuildDirectives.set(pkg.locatorHash, {
+              buildDirectives: installStatus.buildRequest.directives,
+              buildLocations: [installStatus.packageLocation],
+            });
+          }
         }
       }
     }
@@ -1238,10 +1441,17 @@ export class Project {
       const finalizeInstallData = await installer.finalizeInstall();
 
       for (const installStatus of finalizeInstallData?.records ?? []) {
-        packageBuildDirectives.set(installStatus.locatorHash, {
-          directives: installStatus.buildDirective,
-          buildLocations: installStatus.buildLocations,
-        });
+        if (installStatus.buildRequest.skipped) {
+          nextSkippedBuilds.add(installStatus.locator.locatorHash);
+          if (!this.skippedBuilds.has(installStatus.locator.locatorHash)) {
+            skippedBuildLogs.push([installStatus.locator, installStatus.buildRequest.explain]);
+          }
+        } else {
+          packageBuildDirectives.set(installStatus.locator.locatorHash, {
+            buildDirectives: installStatus.buildRequest.directives,
+            buildLocations: installStatus.buildLocations,
+          });
+        }
       }
 
       if (typeof finalizeInstallData?.customData !== `undefined`) {
@@ -1258,11 +1468,10 @@ export class Project {
     if (mode === InstallMode.SkipBuild)
       return;
 
-    const readyPackages = new Set(this.storedPackages.keys());
-    const buildablePackages = new Set(packageBuildDirectives.keys());
+    for (const [, explain] of miscUtils.sortMap(skippedBuildLogs, ([locator]) => structUtils.stringifyLocator(locator)))
+      explain(report);
 
-    for (const locatorHash of buildablePackages)
-      readyPackages.delete(locatorHash);
+    const buildablePackages = new Set(packageBuildDirectives.keys());
 
     const globalHashGenerator = createHash(`sha512`);
     globalHashGenerator.update(process.versions.node);
@@ -1415,14 +1624,14 @@ export class Project {
           if (!ppath.isAbsolute(location))
             throw new Error(`Assertion failed: Expected the build location to be absolute (not ${location})`);
 
-          for (const [buildType, scriptName] of buildInfo.directives) {
+          for (const directive of buildInfo.buildDirectives) {
             let header = `# This file contains the result of Yarn building a package (${structUtils.stringifyLocator(pkg)})\n`;
-            switch (buildType) {
-              case BuildType.SCRIPT: {
-                header += `# Script name: ${scriptName}\n`;
+            switch (directive.type) {
+              case BuildDirectiveType.SCRIPT: {
+                header += `# Script name: ${directive.script}\n`;
               } break;
-              case BuildType.SHELLCODE: {
-                header += `# Script code: ${scriptName}\n`;
+              case BuildDirectiveType.SHELLCODE: {
+                header += `# Script code: ${directive.script}\n`;
               } break;
             }
 
@@ -1439,12 +1648,12 @@ export class Project {
 
               let exitCode;
               try {
-                switch (buildType) {
-                  case BuildType.SCRIPT: {
-                    exitCode = await scriptUtils.executePackageScript(pkg, scriptName, [], {cwd: location, project: this, stdin, stdout, stderr});
+                switch (directive.type) {
+                  case BuildDirectiveType.SCRIPT: {
+                    exitCode = await scriptUtils.executePackageScript(pkg, directive.script, [], {cwd: location, project: this, stdin, stdout, stderr});
                   } break;
-                  case BuildType.SHELLCODE: {
-                    exitCode = await scriptUtils.executePackageShellcode(pkg, scriptName, [], {cwd: location, project: this, stdin, stdout, stderr});
+                  case BuildDirectiveType.SHELLCODE: {
+                    exitCode = await scriptUtils.executePackageShellcode(pkg, directive.script, [], {cwd: location, project: this, stdin, stdout, stderr});
                   } break;
                 }
               } catch (error) {
@@ -1461,14 +1670,20 @@ export class Project {
               xfs.detachTemp(logDir);
 
               const buildMessage = `${structUtils.prettyLocator(this.configuration, pkg)} couldn't be built successfully (exit code ${formatUtils.pretty(this.configuration, exitCode, formatUtils.Type.NUMBER)}, logs can be found here: ${formatUtils.pretty(this.configuration, logFile, formatUtils.Type.PATH)})`;
+              const isOptional = this.optionalBuilds.has(pkg.locatorHash);
 
-              if (this.optionalBuilds.has(pkg.locatorHash)) {
+              if (isOptional)
                 report.reportInfo(MessageName.BUILD_FAILED, buildMessage);
-                return true;
-              } else {
+              else
                 report.reportError(MessageName.BUILD_FAILED, buildMessage);
-                return false;
-              }
+
+              // Sync, because the rendering would end up messed up if other
+              // builds were processed before the file read succeeded.
+              if (SUPPORTS_GROUPS)
+                report.reportFold(npath.fromPortablePath(logFile), xfs.readFileSync(logFile, `utf8`));
+
+
+              return isOptional;
             });
 
             if (!wasBuildSuccessful) {
@@ -1516,6 +1731,22 @@ export class Project {
     // package (and avoid rebuilding it later if it didn't change).
 
     this.storedBuildState = nextBState;
+    this.skippedBuilds = nextSkippedBuilds;
+  }
+
+  async installWithNewReport(reportOpts: {json?: boolean, quiet?: boolean, stdout: internal.Writable}, installOpts: Omit<InstallOptions, `report`>) {
+    const report = await StreamReport.start({
+      configuration: this.configuration,
+      json: reportOpts.json,
+      stdout: reportOpts.stdout,
+      forceSectionAlignment: true,
+      includeLogs: !reportOpts.json && !reportOpts.quiet,
+      includeVersion: true,
+    }, async report => {
+      await this.install({...installOpts, report});
+    });
+
+    return report.exitCode();
   }
 
   async install(opts: InstallOptions) {
@@ -1526,6 +1757,9 @@ export class Project {
     await opts.report.startTimerPromise(`Project validation`, {
       skipIfEmpty: true,
     }, async () => {
+      if (this.configuration.get(`enableOfflineMode`))
+        opts.report.reportWarning(MessageName.OFFLINE_MODE_ENABLED, `Offline work is enabled; Yarn won't fetch packages from the remote registry if it can avoid it`);
+
       await this.configuration.triggerHook(hooks => {
         return hooks.validateProject;
       }, this, {
@@ -1542,12 +1776,14 @@ export class Project {
     if (hasPreErrors)
       return;
 
-    for (const extensionsByIdent of this.configuration.packageExtensions.values())
+    const packageExtensions = await this.configuration.getPackageExtensions();
+
+    for (const extensionsByIdent of packageExtensions.values())
       for (const [, extensionsByRange] of extensionsByIdent)
         for (const extension of extensionsByRange)
           extension.status = PackageExtensionStatus.Inactive;
 
-    const lockfilePath = ppath.join(this.cwd, this.configuration.get(`lockfileFilename`));
+    const lockfilePath = ppath.join(this.cwd, Filename.lockfile);
 
     // If we operate with a frozen lockfile, we take a snapshot of it to later make sure it didn't change
     let initialLockfile: string | null = null;
@@ -1570,7 +1806,9 @@ export class Project {
     await opts.report.startTimerPromise(`Post-resolution validation`, {
       skipIfEmpty: true,
     }, async () => {
-      for (const [, extensionsPerRange] of this.configuration.packageExtensions) {
+      emitPeerDependencyWarnings(this, opts.report);
+
+      for (const [, extensionsPerRange] of packageExtensions) {
         for (const [, extensions] of extensionsPerRange) {
           for (const extension of extensions) {
             if (extension.userProvided) {
@@ -1621,7 +1859,7 @@ export class Project {
       }
     });
 
-    for (const extensionsByIdent of this.configuration.packageExtensions.values())
+    for (const extensionsByIdent of packageExtensions.values())
       for (const [, extensionsByRange] of extensionsByIdent)
         for (const extension of extensionsByRange)
           if (extension.userProvided && extension.status === PackageExtensionStatus.Active)
@@ -1629,10 +1867,6 @@ export class Project {
 
     await opts.report.startTimerPromise(`Fetch step`, async () => {
       await this.fetchEverything(opts);
-
-      if ((typeof opts.persistProject === `undefined` || opts.persistProject) && opts.mode !== InstallMode.UpdateLockfile) {
-        await this.cacheCleanup(opts);
-      }
     });
 
     const immutablePatterns = opts.immutable
@@ -1709,9 +1943,11 @@ export class Project {
 
     const optimizedLockfile: {[key: string]: any} = {};
 
+    const {cacheKey} = Cache.getCacheKey(this.configuration);
+
     optimizedLockfile.__metadata = {
       version: LOCKFILE_VERSION,
-      cacheKey: undefined,
+      cacheKey,
     };
 
     for (const [locatorHash, descriptorHashes] of reverseLookup.entries()) {
@@ -1753,26 +1989,6 @@ export class Project {
 
       manifest.bin = new Map(pkg.bin);
 
-      let entryChecksum: string | undefined;
-      const checksum = this.storedChecksums.get(pkg.locatorHash);
-      if (typeof checksum !== `undefined`) {
-        const cacheKeyIndex = checksum.indexOf(`/`);
-        if (cacheKeyIndex === -1)
-          throw new Error(`Assertion failed: Expected the checksum to reference its cache key`);
-
-        const cacheKey = checksum.slice(0, cacheKeyIndex);
-        const hash = checksum.slice(cacheKeyIndex + 1);
-
-        if (typeof optimizedLockfile.__metadata.cacheKey === `undefined`)
-          optimizedLockfile.__metadata.cacheKey = cacheKey;
-
-        if (cacheKey === optimizedLockfile.__metadata.cacheKey) {
-          entryChecksum = hash;
-        } else {
-          entryChecksum = checksum;
-        }
-      }
-
       optimizedLockfile[key] = {
         ...manifest.exportTo({}, {
           compatibilityMode: false,
@@ -1781,7 +1997,7 @@ export class Project {
         linkType: pkg.linkType.toLowerCase(),
 
         resolution: structUtils.stringifyLocator(pkg),
-        checksum: entryChecksum,
+        checksum: this.storedChecksums.get(pkg.locatorHash),
 
         conditions: pkg.conditions || undefined,
       };
@@ -1796,12 +2012,12 @@ export class Project {
   }
 
   async persistLockfile() {
-    const lockfilePath = ppath.join(this.cwd, this.configuration.get(`lockfileFilename`));
+    const lockfilePath = ppath.join(this.cwd, Filename.lockfile);
 
     let currentContent = ``;
     try {
       currentContent = await xfs.readFilePromise(lockfilePath, `utf8`);
-    } catch (error) {
+    } catch {
       // ignore errors, no big deal
     }
 
@@ -1879,32 +2095,30 @@ export class Project {
   }
 
   async persist() {
-    await this.persistLockfile();
-
-    for (const workspace of this.workspacesByCwd.values()) {
-      await workspace.persistManifest();
-    }
+    const limit = pLimit(4);
+    await Promise.all([
+      this.persistLockfile(),
+      ...this.workspaces.map(workspace => {
+        return limit(() => workspace.persistManifest());
+      }),
+    ]);
   }
 
-  async cacheCleanup({cache, report}: InstallOptions)  {
+  async cacheCleanup({cache, report}: Pick<InstallOptions, `cache` | `report`>)  {
     if (this.configuration.get(`enableGlobalCache`))
-      return;
+      return null;
 
     const PRESERVED_FILES = new Set([
       `.gitignore`,
     ]);
 
     if (!isFolderInside(cache.cwd, this.cwd))
-      return;
+      return null;
 
     if (!(await xfs.existsPromise(cache.cwd)))
-      return;
+      return null;
 
-    const preferAggregateCacheInfo = this.configuration.get(`preferAggregateCacheInfo`);
-
-    let entriesRemoved = 0;
-    let lastEntryRemoved = null;
-
+    const cleanupPromises: Array<Promise<number>> = [];
     for (const entry of await xfs.readdirPromise(cache.cwd)) {
       if (PRESERVED_FILES.has(entry))
         continue;
@@ -1913,28 +2127,25 @@ export class Project {
       if (cache.markedFiles.has(entryPath))
         continue;
 
-      lastEntryRemoved = entry;
-
       if (cache.immutable) {
         report.reportError(MessageName.IMMUTABLE_CACHE, `${formatUtils.pretty(this.configuration, ppath.basename(entryPath), `magenta`)} appears to be unused and would be marked for deletion, but the cache is immutable`);
       } else {
-        if (preferAggregateCacheInfo)
-          entriesRemoved += 1;
-        else
-          report.reportInfo(MessageName.UNUSED_CACHE_ENTRY, `${formatUtils.pretty(this.configuration, ppath.basename(entryPath), `magenta`)} appears to be unused - removing`);
-
-        await xfs.removePromise(entryPath);
+        cleanupPromises.push(xfs.lstatPromise(entryPath).then(async stat => {
+          await xfs.removePromise(entryPath);
+          return stat.size;
+        }));
       }
     }
 
-    if (preferAggregateCacheInfo && entriesRemoved !== 0) {
-      report.reportInfo(
-        MessageName.UNUSED_CACHE_ENTRY,
-        entriesRemoved > 1
-          ? `${entriesRemoved} packages appeared to be unused and were removed`
-          : `${lastEntryRemoved} appeared to be unused and was removed`,
-      );
-    }
+    if (cleanupPromises.length === 0)
+      return null;
+
+    const sizes = await Promise.all(cleanupPromises);
+
+    return {
+      count: cleanupPromises.length,
+      size: sizes.reduce((sum, size) => sum + size, 0),
+    };
   }
 }
 
@@ -1958,9 +2169,9 @@ function applyVirtualResolutionMutations({
   accessibleLocators = new Set(),
   optionalBuilds = new Set(),
   peerRequirements = new Map(),
+  peerWarnings = [],
+  peerRequirementNodes = new Map(),
   volatileDescriptors = new Set(),
-
-  report,
 }: {
   project: Project;
 
@@ -1970,10 +2181,10 @@ function applyVirtualResolutionMutations({
 
   accessibleLocators?: Set<LocatorHash>;
   optionalBuilds?: Set<LocatorHash>;
-  peerRequirements?: Project['peerRequirements'];
+  peerRequirements?: Project[`peerRequirements`];
+  peerWarnings?: Project[`peerWarnings`];
+  peerRequirementNodes?: Project[`peerRequirementNodes`];
   volatileDescriptors?: Set<DescriptorHash>;
-
-  report: Report | null;
 }) {
   const virtualStack = new Map<LocatorHash, number>();
   const resolutionStack: Array<Locator> = [];
@@ -1981,21 +2192,14 @@ function applyVirtualResolutionMutations({
   const allIdents = new Map<IdentHash, Ident>();
 
   // We'll be keeping track of all virtual descriptors; once they have all
-  // been generated we'll check whether they can be consolidated into one.
+  // been generated we'll check whether they can be deduplicated into one.
   const allVirtualInstances = new Map<LocatorHash, Map<string, Descriptor>>();
   const allVirtualDependents = new Map<DescriptorHash, Set<LocatorHash>>();
 
-  // First key is the first package that requests the peer dependency. Second
-  // key is the name of the package in the peer dependency. Value is the list
-  // of all packages that extend the original peer requirement.
-  const peerDependencyLinks: Map<LocatorHash, Map<string, Array<LocatorHash>>> = new Map();
-
-  // We keep track on which package depend on which other package with peer
-  // dependencies; this way we can emit warnings for them later on.
-  const peerDependencyDependents = new Map<LocatorHash, Set<LocatorHash>>();
+  const allPeerRequests = new Map<LocatorHash, Map<IdentHash, PeerRequestNode>>();
 
   // We must keep a copy of the workspaces original dependencies, because they
-  // may be overriden during the virtual package resolution - cf Dragon Test #5
+  // may be overridden during the virtual package resolution - cf Dragon Test #5
   const originalWorkspaceDefinitions = new Map<LocatorHash, Package | null>(project.workspaces.map(workspace => {
     const locatorHash = workspace.anchoredLocator.locatorHash;
 
@@ -2019,6 +2223,7 @@ function applyVirtualResolutionMutations({
     xfs.writeFileSync(logFile, content);
 
     xfs.detachTemp(logDir);
+
     throw new ReportError(MessageName.STACK_OVERFLOW_RESOLUTION, `Encountered a stack overflow when resolving peer dependencies; cf ${npath.fromPortablePath(logFile)}`);
   };
 
@@ -2034,41 +2239,37 @@ function applyVirtualResolutionMutations({
     return pkg;
   };
 
-  const resolvePeerDependencies = (parentDescriptor: Descriptor, parentLocator: Locator, peerSlots: Map<IdentHash, LocatorHash>, {top, optional}: {top: LocatorHash, optional: boolean}) => {
+  const resolvePeerDependencies = (parentDescriptor: Descriptor, parentLocator: Locator, parentPeerRequests: Map<IdentHash, PeerRequestNode>, {top, optional}: {top: LocatorHash, optional: boolean}) => {
     if (resolutionStack.length > 1000)
       reportStackOverflow();
 
     resolutionStack.push(parentLocator);
-    const result = resolvePeerDependenciesImpl(parentDescriptor, parentLocator, peerSlots, {top, optional});
+    const result = resolvePeerDependenciesImpl(parentDescriptor, parentLocator, parentPeerRequests, {top, optional});
     resolutionStack.pop();
 
     return result;
   };
 
-  const resolvePeerDependenciesImpl = (parentDescriptor: Descriptor, parentLocator: Locator, peerSlots: Map<IdentHash, LocatorHash>, {top, optional}: {top: LocatorHash, optional: boolean}) => {
+  const resolvePeerDependenciesImpl = (parentDescriptor: Descriptor, parentLocator: Locator, parentPeerRequests: Map<IdentHash, PeerRequestNode>, {top, optional}: {top: LocatorHash, optional: boolean}) => {
+    if (!optional)
+      optionalBuilds.delete(parentLocator.locatorHash);
+
     if (accessibleLocators.has(parentLocator.locatorHash))
       return;
 
     accessibleLocators.add(parentLocator.locatorHash);
-
-    if (!optional)
-      optionalBuilds.delete(parentLocator.locatorHash);
 
     const parentPackage = allPackages.get(parentLocator.locatorHash);
     if (!parentPackage)
       throw new Error(`Assertion failed: The package (${structUtils.prettyLocator(project.configuration, parentLocator)}) should have been registered`);
 
     const newVirtualInstances: Array<[Locator, Descriptor, Package]> = [];
+    const parentPeerRequirements = new Map<IdentHash, PeerRequirementNode>();
 
     const firstPass = [];
     const secondPass = [];
     const thirdPass = [];
     const fourthPass = [];
-
-    // During this first pass we virtualize the descriptors. This allows us
-    // to reference them from their sibling without being order-dependent,
-    // which is required to solve cases where packages with peer dependencies
-    // have peer dependencies themselves.
 
     for (const descriptor of Array.from(parentPackage.dependencies.values())) {
       // We shouldn't virtualize the package if it was obtained through a peer
@@ -2099,11 +2300,6 @@ function applyVirtualResolutionMutations({
 
       const resolution = allResolutions.get(descriptor.descriptorHash);
       if (!resolution)
-        // Note that we can't use `getPackageFromDescriptor` (defined below,
-        // because when doing the initial tree building right after loading the
-        // project it's possible that we get some entries that haven't been
-        // registered into the lockfile yet - for example when the user has
-        // manually changed the package.json dependencies)
         throw new Error(`Assertion failed: The resolution (${structUtils.prettyDescriptor(project.configuration, descriptor)}) should have been registered`);
 
       const pkg = originalWorkspaceDefinitions.get(resolution) || allPackages.get(resolution);
@@ -2119,9 +2315,9 @@ function applyVirtualResolutionMutations({
       let virtualizedPackage: Package;
 
       const missingPeerDependencies = new Set<IdentHash>();
+      const peerRequests = new Map<IdentHash, PeerRequestNode>();
 
-      let nextPeerSlots: Map<IdentHash, LocatorHash>;
-
+      // In the first pass we virtualize the requester's descriptor and package
       firstPass.push(() => {
         virtualizedDescriptor = structUtils.virtualizeDescriptor(descriptor, parentLocator.locatorHash);
         virtualizedPackage = structUtils.virtualizePackage(pkg, parentLocator.locatorHash);
@@ -2138,49 +2334,80 @@ function applyVirtualResolutionMutations({
         newVirtualInstances.push([pkg, virtualizedDescriptor, virtualizedPackage]);
       });
 
+      // In the second pass we resolve the peer requests to their provision.
+      // This must be done in a separate pass since the provided package may
+      // itself be a virtualized sibling package.
       secondPass.push(() => {
-        nextPeerSlots = new Map<IdentHash, LocatorHash>();
+        allPeerRequests.set(virtualizedPackage.locatorHash, peerRequests);
 
-        for (const peerRequest of virtualizedPackage.peerDependencies.values()) {
-          let peerDescriptor = parentPackage.dependencies.get(peerRequest.identHash);
+        for (const peerDescriptor of virtualizedPackage.peerDependencies.values()) {
+          const peerRequirement = miscUtils.getFactoryWithDefault(parentPeerRequirements, peerDescriptor.identHash, (): PeerRequirementNode => {
+            let parentRequest = parentPeerRequests.get(peerDescriptor.identHash) ?? null;
 
-          if (!peerDescriptor && structUtils.areIdentsEqual(parentLocator, peerRequest)) {
-            // If the parent isn't installed under an alias we can skip unnecessary steps
-            if (parentDescriptor.identHash === parentLocator.identHash) {
-              peerDescriptor = parentDescriptor;
-            } else {
-              peerDescriptor = structUtils.makeDescriptor(parentLocator, parentDescriptor.range);
+            // 1. Try to resolve the peer request with parent's dependencies (siblings)
+            let peerProvision = parentPackage.dependencies.get(peerDescriptor.identHash);
 
-              allDescriptors.set(peerDescriptor.descriptorHash, peerDescriptor);
-              allResolutions.set(peerDescriptor.descriptorHash, parentLocator.locatorHash);
+            // 2. Try to resolve the peer request with the parent itself
+            if (!peerProvision && structUtils.areIdentsEqual(parentLocator, peerDescriptor)) {
+              // If the parent isn't installed under an alias we can skip unnecessary steps
+              if (parentDescriptor.identHash === parentLocator.identHash) {
+                peerProvision = parentDescriptor;
+              } else {
+                peerProvision = structUtils.makeDescriptor(parentLocator, parentDescriptor.range);
 
-              volatileDescriptors.delete(peerDescriptor.descriptorHash);
+                allDescriptors.set(peerProvision.descriptorHash, peerProvision);
+                allResolutions.set(peerProvision.descriptorHash, parentLocator.locatorHash);
+
+                volatileDescriptors.delete(peerProvision.descriptorHash);
+
+                parentRequest = null;
+              }
             }
-          }
 
-          // If the peerRequest isn't provided by the parent then fall back to dependencies
-          if ((!peerDescriptor || peerDescriptor.range === `missing:`) && virtualizedPackage.dependencies.has(peerRequest.identHash)) {
-            virtualizedPackage.peerDependencies.delete(peerRequest.identHash);
+            if (!peerProvision)
+              peerProvision = structUtils.makeDescriptor(peerDescriptor, `missing:`);
+
+            return {
+              subject: parentLocator,
+              ident: peerDescriptor,
+              provided: peerProvision,
+              root: !parentRequest,
+
+              requests: new Map(),
+
+              hash: `p${hashUtils.makeHash(parentLocator.locatorHash, peerDescriptor.identHash).slice(0, 5)}`,
+            };
+          });
+
+          const peerProvision = peerRequirement.provided;
+          // 3. Try package's own dependencies (peer-with-default)
+          // This is done outside of the factory above because this resolution is not sharable between sibling virtuals
+          if (peerProvision.range === `missing:` && virtualizedPackage.dependencies.has(peerDescriptor.identHash)) {
+            virtualizedPackage.peerDependencies.delete(peerDescriptor.identHash);
             continue;
           }
 
-          if (!peerDescriptor)
-            peerDescriptor = structUtils.makeDescriptor(peerRequest, `missing:`);
+          peerRequests.set(peerDescriptor.identHash, {
+            requester: virtualizedPackage,
+            descriptor: peerDescriptor,
+            meta: virtualizedPackage.peerDependenciesMeta.get(structUtils.stringifyIdent(peerDescriptor)),
 
-          virtualizedPackage.dependencies.set(peerDescriptor.identHash, peerDescriptor);
+            children: new Map(),
+          });
+
+          virtualizedPackage.dependencies.set(peerDescriptor.identHash, peerProvision);
 
           // Need to track when a virtual descriptor is set as a dependency in case
-          // the descriptor will be consolidated.
-          if (structUtils.isVirtualDescriptor(peerDescriptor)) {
-            const dependents = miscUtils.getSetWithDefault(allVirtualDependents, peerDescriptor.descriptorHash);
+          // the descriptor will be deduplicated.
+          if (structUtils.isVirtualDescriptor(peerProvision)) {
+            const dependents = miscUtils.getSetWithDefault(allVirtualDependents, peerProvision.descriptorHash);
             dependents.add(virtualizedPackage.locatorHash);
           }
 
-          allIdents.set(peerDescriptor.identHash, peerDescriptor);
-          if (peerDescriptor.range === `missing:`)
-            missingPeerDependencies.add(peerDescriptor.identHash);
-
-          nextPeerSlots.set(peerRequest.identHash, peerSlots.get(peerRequest.identHash) ?? virtualizedPackage.locatorHash);
+          allIdents.set(peerProvision.identHash, peerProvision);
+          if (peerProvision.range === `missing:`) {
+            missingPeerDependencies.add(peerProvision.identHash);
+          }
         }
 
         // Since we've had to add new dependencies we need to sort them all over again
@@ -2189,6 +2416,13 @@ function applyVirtualResolutionMutations({
         }));
       });
 
+      // Between the second and third passes, the deduplication passes happen.
+
+      // In the third pass, we recurse to resolve the peer request for the
+      // virtual package, but only if it is not deduplicated. If the virtual
+      // package is deduplicated, this would already have been done. This must
+      // be done after the deduplication passes as otherwise it could lead to
+      // infinite recursion when dealing with circular dependencies.
       thirdPass.push(() => {
         if (!allPackages.has(virtualizedPackage.locatorHash))
           return;
@@ -2206,15 +2440,13 @@ function applyVirtualResolutionMutations({
         const next = typeof current !== `undefined` ? current + 1 : 1;
 
         virtualStack.set(pkg.locatorHash, next);
-        resolvePeerDependencies(virtualizedDescriptor, virtualizedPackage, nextPeerSlots, {top, optional: isOptional});
+        resolvePeerDependencies(virtualizedDescriptor, virtualizedPackage, peerRequests, {top, optional: isOptional});
         virtualStack.set(pkg.locatorHash, next - 1);
       });
 
+      // In the fourth pass, we register information about the peer requirement
+      // and peer request trees, using the post-deduplication information.
       fourthPass.push(() => {
-        // Regardless of whether the initial virtualized package got deduped
-        // or not, we now register that *this* package is now a dependent on
-        // whatever its peer dependencies have been resolved to. We'll later
-        // use this information to generate warnings.
         const finalDescriptor = parentPackage.dependencies.get(descriptor.identHash);
         if (typeof finalDescriptor === `undefined`)
           throw new Error(`Assertion failed: Expected the peer dependency to have been turned into a dependency`);
@@ -2223,18 +2455,24 @@ function applyVirtualResolutionMutations({
         if (typeof finalResolution === `undefined`)
           throw new Error(`Assertion failed: Expected the descriptor to be registered`);
 
-        miscUtils.getSetWithDefault(peerDependencyDependents, finalResolution).add(parentLocator.locatorHash);
+        const finalPeerRequests = allPeerRequests.get(finalResolution);
+        if (typeof finalPeerRequests === `undefined`)
+          throw new Error(`Assertion failed: Expected the peer requests to be registered`);
+
+        for (const peerRequirement of parentPeerRequirements.values()) {
+          const peerRequest = finalPeerRequests.get(peerRequirement.ident.identHash);
+          if (!peerRequest)
+            continue;
+
+          peerRequirement.requests.set(finalDescriptor.descriptorHash, peerRequest);
+          peerRequirementNodes.set(peerRequirement.hash, peerRequirement);
+          if (!peerRequirement.root) {
+            parentPeerRequests.get(peerRequirement.ident.identHash)?.children.set(finalDescriptor.descriptorHash, peerRequest);
+          }
+        }
 
         if (!allPackages.has(virtualizedPackage.locatorHash))
           return;
-
-        for (const descriptor of virtualizedPackage.peerDependencies.values()) {
-          const root = nextPeerSlots.get(descriptor.identHash);
-          if (typeof root === `undefined`)
-            throw new Error(`Assertion failed: Expected the peer dependency ident to be registered`);
-
-          miscUtils.getArrayWithDefault(miscUtils.getMapWithDefault(peerDependencyLinks, root), structUtils.stringifyIdent(descriptor)).push(virtualizedPackage.locatorHash);
-        }
 
         for (const missingPeerDependency of missingPeerDependencies) {
           virtualizedPackage.dependencies.delete(missingPeerDependency);
@@ -2307,6 +2545,12 @@ function applyVirtualResolutionMutations({
 
           pkg.dependencies.set(virtualDescriptor.identHash, masterDescriptor);
         }
+
+        for (const peerRequirement of parentPeerRequirements.values()) {
+          if (peerRequirement.provided.descriptorHash === virtualDescriptor.descriptorHash) {
+            peerRequirement.provided = masterDescriptor;
+          }
+        }
       }
     } while (!stable);
 
@@ -2322,177 +2566,220 @@ function applyVirtualResolutionMutations({
     resolvePeerDependencies(workspace.anchoredDescriptor, locator, new Map(), {top: locator.locatorHash, optional: false});
   }
 
-  enum WarningType {
-    NotProvided,
-    NotCompatible,
-  }
-
-  type Warning = {
-    type: WarningType.NotProvided;
-    subject: Locator;
-    requested: Ident;
-    requester: Ident;
-    hash: string;
-  } | {
-    type: WarningType.NotCompatible;
-    subject: Locator;
-    requested: Ident;
-    requester: Ident;
-    version: string;
-    hash: string;
-    requirementCount: number;
-  };
-
-  const warnings: Array<Warning> = [];
-
-  for (const [rootHash, dependents] of peerDependencyDependents) {
-    const root = allPackages.get(rootHash);
-    if (typeof root === `undefined`)
-      throw new Error(`Assertion failed: Expected the root to be registered`);
-
-    // We retrieve the set of packages that provide complementary peer
-    // dependencies to the one already offered by our root package, and to
-    // whom other package.
-    //
-    // We simply skip if the record doesn't exist because a package may not
-    // have any records if it didn't contribute any new peer (it only exists
-    // if the package has at least one peer that isn't listed by its parent
-    // packages).
-    //
-    const rootLinks = peerDependencyLinks.get(rootHash);
-    if (typeof rootLinks === `undefined`)
+  for (const requirement of peerRequirementNodes.values()) {
+    // Only generate warnings on root requirements
+    if (!requirement.root)
       continue;
 
-    for (const dependentHash of dependents) {
-      const dependent = allPackages.get(dependentHash);
+    const dependent = allPackages.get(requirement.subject.locatorHash);
 
-      // The package may have been pruned during a deduplication
-      if (typeof dependent === `undefined`)
-        continue;
+    // The package may have been pruned during a deduplication
+    if (typeof dependent === `undefined`)
+      continue;
 
-      for (const [identStr, linkHashes] of rootLinks) {
-        const ident = structUtils.parseIdent(identStr);
+    // For backwards-compatibility
+    // TODO: Remove for next major
+    for (const peerRequest of requirement.requests.values()) {
+      const hash = `p${hashUtils.makeHash(requirement.subject.locatorHash, structUtils.stringifyIdent(requirement.ident), peerRequest.requester.locatorHash).slice(0, 5)}`;
 
-        // This dependent may have a peer dep itself, in which case it's not
-        // the true root, and we can ignore it
-        if (dependent.peerDependencies.has(ident.identHash))
-          continue;
+      peerRequirements.set(hash, {
+        subject: requirement.subject.locatorHash,
+        requested: requirement.ident,
+        rootRequester: peerRequest.requester.locatorHash,
+        allRequesters: Array.from(structUtils.allPeerRequests(peerRequest), request => request.requester.locatorHash),
+      });
+    }
 
-        const hash = `p${hashUtils.makeHash(dependentHash, identStr, rootHash).slice(0, 5)}`;
+    const allRequests = [...structUtils.allPeerRequests(requirement)];
 
-        peerRequirements.set(hash, {
-          subject: dependentHash,
-          requested: ident,
-          rootRequester: rootHash,
-          allRequesters: linkHashes,
-        });
+    if (requirement.provided.range !== `missing:`) {
+      const peerPackage = getPackageFromDescriptor(requirement.provided);
+      const peerVersion = peerPackage.version ?? `0.0.0`;
 
-        // Note: this can be undefined when the peer dependency isn't provided at all
-        const resolvedDescriptor = root.dependencies.get(ident.identHash);
+      const resolveWorkspaceRange = (range: string) => {
+        if (range.startsWith(WorkspaceResolver.protocol)) {
+          if (!project.tryWorkspaceByLocator(peerPackage))
+            return null;
 
-        if (typeof resolvedDescriptor !== `undefined`) {
-          const peerResolution = getPackageFromDescriptor(resolvedDescriptor);
-          const peerVersion = peerResolution.version ?? `0.0.0`;
-
-          const ranges = new Set<string>();
-          for (const linkHash of linkHashes) {
-            const link = allPackages.get(linkHash);
-            if (typeof link === `undefined`)
-              throw new Error(`Assertion failed: Expected the link to be registered`);
-
-            const peerDependency = link.peerDependencies.get(ident.identHash);
-            if (typeof peerDependency === `undefined`)
-              throw new Error(`Assertion failed: Expected the ident to be registered`);
-
-            ranges.add(peerDependency.range);
-          }
-
-          const satisfiesAll = [...ranges].every(range => {
-            if (range.startsWith(WorkspaceResolver.protocol)) {
-              if (!project.tryWorkspaceByLocator(peerResolution))
-                return false;
-
-              range = range.slice(WorkspaceResolver.protocol.length);
-              if (range === `^` || range === `~`) {
-                range = `*`;
-              }
-            }
-
-            return semverUtils.satisfiesWithPrereleases(peerVersion, range);
-          });
-
-          if (!satisfiesAll) {
-            warnings.push({
-              type: WarningType.NotCompatible,
-              subject: dependent,
-              requested: ident,
-              requester: root,
-              version: peerVersion,
-              hash,
-              requirementCount: linkHashes.length,
-            });
-          }
-        } else {
-          const peerDependencyMeta = root.peerDependenciesMeta.get(identStr);
-
-          if (!peerDependencyMeta?.optional) {
-            warnings.push({
-              type: WarningType.NotProvided,
-              subject: dependent,
-              requested: ident,
-              requester: root,
-              hash,
-            });
+          range = range.slice(WorkspaceResolver.protocol.length);
+          if (range === `^` || range === `~`) {
+            range = `*`;
           }
         }
+
+        return range;
+      };
+
+      let satisfiesAll = true;
+      for (const peerRequest of allRequests) {
+        const range = resolveWorkspaceRange(peerRequest.descriptor.range);
+        if (range === null) {
+          satisfiesAll = false;
+          continue;
+        }
+
+        if (!semverUtils.satisfiesWithPrereleases(peerVersion, range)) {
+          satisfiesAll = false;
+
+          // For backwards-compatibility
+          // TODO: Remove for next major
+          const hash = `p${hashUtils.makeHash(requirement.subject.locatorHash, structUtils.stringifyIdent(requirement.ident), peerRequest.requester.locatorHash).slice(0, 5)}`;
+
+          peerWarnings.push({
+            type: PeerWarningType.NotCompatible,
+            subject: dependent,
+            requested: requirement.ident,
+            requester: peerRequest.requester,
+            version: peerVersion,
+            hash,
+            requirementCount: allRequests.length,
+          });
+        }
+      }
+
+      if (!satisfiesAll) {
+        const allRanges = allRequests.map(peerRequest => resolveWorkspaceRange(peerRequest.descriptor.range));
+
+        peerWarnings.push({
+          type: PeerWarningType.NodeNotCompatible,
+          node: requirement,
+          range: allRanges.includes(null)
+            ? null
+            : semverUtils.simplifyRanges(allRanges as Array<string>),
+          hash: requirement.hash,
+        });
+      }
+    } else {
+      let satisfiesAll = true;
+      for (const peerRequest of allRequests) {
+        if (!peerRequest.meta?.optional) {
+          satisfiesAll = false;
+
+          // For backwards-compatibility
+          // TODO: Remove for next major
+          const hash = `p${hashUtils.makeHash(requirement.subject.locatorHash, structUtils.stringifyIdent(requirement.ident), peerRequest.requester.locatorHash).slice(0, 5)}`;
+
+          peerWarnings.push({
+            type: PeerWarningType.NotProvided,
+            subject: dependent,
+            requested: requirement.ident,
+            requester: peerRequest.requester,
+            hash,
+          });
+        }
+      }
+      if (!satisfiesAll) {
+        peerWarnings.push({
+          type: PeerWarningType.NodeNotProvided,
+          node: requirement,
+          hash: requirement.hash,
+        });
       }
     }
   }
+}
 
-  const warningSortCriterias: Array<((warning: Warning) => string)> = [
-    warning => structUtils.prettyLocatorNoColors(warning.subject),
-    warning => structUtils.stringifyIdent(warning.requested),
-    warning => `${warning.type}`,
-  ];
+function * allPeerRequestsWithRoot(root: PeerRequestNode | PeerRequirementNode) {
+  const roots = new Map<PeerRequestNode, PeerRequestNode>();
 
-  report?.startSectionSync({
+  if (`children` in root) {
+    roots.set(root, root);
+  } else {
+    for (const request of root.requests.values()) {
+      roots.set(request, request);
+    }
+  }
+
+  for (const [request, root] of roots) {
+    yield {request, root};
+    for (const child of request.children.values()) {
+      if (!roots.has(child)) {
+        roots.set(child, root);
+      }
+    }
+  }
+}
+
+function emitPeerDependencyWarnings(project: Project, report: Report) {
+  const incompatibleWarnings: Array<string> = [];
+  const missingWarnings: Array<string> = [];
+  let hasTransitiveWarnings = false;
+
+  for (const warning of project.peerWarnings) {
+    if (warning.type === PeerWarningType.NotCompatible || warning.type === PeerWarningType.NotProvided)
+      continue;
+
+    if (!project.tryWorkspaceByLocator(warning.node.subject)) {
+      hasTransitiveWarnings = true;
+      continue;
+    }
+
+    if (warning.type === PeerWarningType.NodeNotCompatible) {
+      const peerLocatorHash = project.storedResolutions.get(warning.node.provided.descriptorHash);
+      if (typeof peerLocatorHash === `undefined`)
+        throw new Error(`Assertion failed: Expected the descriptor to be registered`);
+
+      const peerPackage = project.storedPackages.get(peerLocatorHash);
+      if (typeof peerPackage === `undefined`)
+        throw new Error(`Assertion failed: Expected the package to be registered`);
+
+      const requester = miscUtils.mapAndFind(allPeerRequestsWithRoot(warning.node), ({request, root}) => {
+        if (!semverUtils.satisfiesWithPrereleases(peerPackage.version ?? `0.0.0`, request.descriptor.range))
+          return request === root
+            ? structUtils.prettyIdent(project.configuration, request.requester)
+            : `${structUtils.prettyIdent(project.configuration, request.requester)} (via ${structUtils.prettyIdent(project.configuration, root.requester)})`;
+
+        return miscUtils.mapAndFind.skip;
+      });
+      const otherPackages = [...structUtils.allPeerRequests(warning.node)].length > 1
+        ? `and other dependencies request`
+        : `requests`;
+
+      const rangeDescription = warning.range
+        ? structUtils.prettyRange(project.configuration, warning.range)
+        : formatUtils.pretty(project.configuration, `but they have non-overlapping ranges!`, `redBright`);
+
+      incompatibleWarnings.push(`${
+        structUtils.prettyIdent(project.configuration, warning.node.ident)
+      } is listed by your project with version ${
+        structUtils.prettyReference(project.configuration, peerPackage.version ?? `0.0.0`)
+      } (${
+        formatUtils.pretty(project.configuration, warning.hash, formatUtils.Type.CODE)
+      }), which doesn't satisfy what ${requester} ${otherPackages} (${rangeDescription}).`);
+    }
+
+    if (warning.type === PeerWarningType.NodeNotProvided) {
+      const otherPackages = warning.node.requests.size > 1
+        ? ` and other dependencies`
+        : ``;
+
+      missingWarnings.push(`${
+        structUtils.prettyLocator(project.configuration, warning.node.subject)
+      } doesn't provide ${
+        structUtils.prettyIdent(project.configuration, warning.node.ident)
+      } (${
+        formatUtils.pretty(project.configuration, warning.hash, formatUtils.Type.CODE)
+      }), requested by ${
+        structUtils.prettyIdent(project.configuration, warning.node.requests.values().next().value.requester)
+      }${otherPackages}.`);
+    }
+  }
+
+  report.startSectionSync({
     reportFooter: () => {
-      report.reportWarning(MessageName.UNNAMED, `Some peer dependencies are incorrectly met; run ${formatUtils.pretty(project.configuration, `yarn explain peer-requirements <hash>`, formatUtils.Type.CODE)} for details, where ${formatUtils.pretty(project.configuration, `<hash>`, formatUtils.Type.CODE)} is the six-letter p-prefixed code`);
+      report.reportWarning(MessageName.EXPLAIN_PEER_DEPENDENCIES_CTA, `Some peer dependencies are incorrectly met by your project; run ${formatUtils.pretty(project.configuration, `yarn explain peer-requirements <hash>`, formatUtils.Type.CODE)} for details, where ${formatUtils.pretty(project.configuration, `<hash>`, formatUtils.Type.CODE)} is the six-letter p-prefixed code.`);
     },
     skipIfEmpty: true,
   }, () => {
-    for (const warning of miscUtils.sortMap(warnings, warningSortCriterias)) {
-      switch (warning.type) {
-        case WarningType.NotProvided: {
-          report.reportWarning(MessageName.MISSING_PEER_DEPENDENCY, `${
-            structUtils.prettyLocator(project.configuration, warning.subject)
-          } doesn't provide ${
-            structUtils.prettyIdent(project.configuration, warning.requested)
-          } (${
-            formatUtils.pretty(project.configuration, warning.hash, formatUtils.Type.CODE)
-          }), requested by ${
-            structUtils.prettyIdent(project.configuration, warning.requester)
-          }`);
-        } break;
+    for (const warning of miscUtils.sortMap(incompatibleWarnings, line => formatUtils.stripAnsi(line)))
+      report.reportWarning(MessageName.INCOMPATIBLE_PEER_DEPENDENCY, warning);
 
-        case WarningType.NotCompatible: {
-          const andDescendants = warning.requirementCount > 1
-            ? `and some of its descendants request`
-            : `requests`;
-
-          report.reportWarning(MessageName.INCOMPATIBLE_PEER_DEPENDENCY, `${
-            structUtils.prettyLocator(project.configuration, warning.subject)
-          } provides ${
-            structUtils.prettyIdent(project.configuration, warning.requested)
-          } (${
-            formatUtils.pretty(project.configuration, warning.hash, formatUtils.Type.CODE)
-          }) with version ${
-            structUtils.prettyReference(project.configuration, warning.version)
-          }, which doesn't satisfy what ${
-            structUtils.prettyIdent(project.configuration, warning.requester)
-          } ${andDescendants}`);
-        } break;
-      }
+    for (const warning of miscUtils.sortMap(missingWarnings, line => formatUtils.stripAnsi(line))) {
+      report.reportWarning(MessageName.MISSING_PEER_DEPENDENCY, warning);
     }
   });
+
+  if (hasTransitiveWarnings) {
+    report.reportWarning(MessageName.EXPLAIN_PEER_DEPENDENCIES_CTA, `Some peer dependencies are incorrectly met by dependencies; run ${formatUtils.pretty(project.configuration, `yarn explain peer-requirements`, formatUtils.Type.CODE)} for details.`);
+  }
 }
