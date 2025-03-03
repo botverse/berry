@@ -8,6 +8,7 @@ export const execPromise = promisify(exec);
 interface Options {
   cwd: PortablePath;
   env?: Record<string, string>;
+  stdin?: string;
 }
 
 export type ExecResult = {
@@ -25,7 +26,7 @@ export const execFile = (
   options: Options,
 ): Promise<ExecResult> => {
   return new Promise((resolve, reject) => {
-    cp.execFile(path, args, {
+    const process = cp.execFile(path, args, {
       ...options,
       cwd: options.cwd ? npath.fromPortablePath(options.cwd) : undefined,
     }, (error, stdout, stderr) => {
@@ -50,5 +51,20 @@ export const execFile = (
         });
       }
     });
+
+    if (typeof options.stdin !== `undefined`) {
+      process.stdin?.write(options.stdin);
+      process.stdin?.end();
+    }
   });
+};
+
+export const execGitInit = async (
+  options: Options,
+) => {
+  await execFile(`git`, [`init`], options);
+  await execFile(`git`, [`config`, `user.email`, `you@example.com`], options);
+  await execFile(`git`, [`config`, `user.name`, `Your Name`], options);
+  await execFile(`git`, [`config`, `commit.gpgSign`, `false`], options);
+  await execFile(`git`, [`config`, `core.hooksPath`, `no-hooks`], options);
 };

@@ -17,7 +17,7 @@ export default class VersionApplyCommand extends BaseCommand {
     details: `
       This command will apply the deferred version changes and remove their definitions from the repository.
 
-      Note that if \`--prerelease\` is set, the given prerelease identifier (by default \`rc.%d\`) will be used on all new versions and the version definitions will be kept as-is.
+      Note that if \`--prerelease\` is set, the given prerelease identifier (by default \`rc.%n\`) will be used on all new versions and the version definitions will be kept as-is.
 
       By default only the current workspace will be bumped, but you can configure this behavior by using one of:
 
@@ -116,11 +116,17 @@ export default class VersionApplyCommand extends BaseCommand {
         }
 
         report.reportSeparator();
-
-        await project.install({cache, report});
       }
     });
 
-    return applyReport.exitCode();
+    if (this.dryRun || applyReport.hasErrors())
+      return applyReport.exitCode();
+
+    return await project.installWithNewReport({
+      json: this.json,
+      stdout: this.context.stdout,
+    }, {
+      cache,
+    });
   }
 }

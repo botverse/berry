@@ -82,22 +82,52 @@ export function stringifyValueArgument(argument: ValueArgument): string {
   return argument.segments.map(segment => stringifyArgumentSegment(segment)).join(``);
 }
 
+const ESCAPED_CONTROL_CHARS = new Map([
+  [`\f`, `\\f`],
+  [`\n`, `\\n`],
+  [`\r`, `\\r`],
+  [`\t`, `\\t`],
+  [`\v`, `\\v`],
+  [`\0`, `\\0`],
+]);
+
+const ESCAPED_DBL_CHARS = new Map([
+  [`\\`, `\\\\`],
+  [`$`, `\\$`],
+  [`"`, `\\"`],
+  ...Array.from(ESCAPED_CONTROL_CHARS, ([c, replacement]): [string, string] => {
+    return [c, `"$'${replacement}'"`];
+  }),
+]);
+
+const getEscapedControlChar = (c: string) => {
+  return ESCAPED_CONTROL_CHARS.get(c) ?? `\\x${c.charCodeAt(0).toString(16).padStart(2, `0`)}`;
+};
+
+const getEscapedDblChar = (match: string) => {
+  return ESCAPED_DBL_CHARS.get(match) ?? `"$'${getEscapedControlChar(match)}'"`;
+};
+
 export function stringifyArgumentSegment(argumentSegment: ArgumentSegment): string {
-  const doubleQuoteIfRequested = (string: string, quote: boolean) => quote ? `"${string}"` : string;
+  const doubleQuoteIfRequested = (string: string, quote: boolean) => quote
+    ? `"${string}"`
+    : string;
+
   const quoteIfNeeded = (text: string) => {
     if (text === ``)
-      return `""`;
-    if (!text.match(/[(){}<>$|&; \t"']/))
+      return `''`;
+
+    if (!text.match(/[()}<>$|&;"'\n\t ]/))
       return text;
-    return `$'${text
-      .replace(/\\/g, `\\\\`)
-      .replace(/'/g, `\\'`)
-      .replace(/\f/g, `\\f`)
-      .replace(/\n/g, `\\n`)
-      .replace(/\r/g, `\\r`)
-      .replace(/\t/g, `\\t`)
-      .replace(/\v/g, `\\v`)
-      .replace(/\0/g, `\\0`)}'`;
+
+    if (!text.match(/['\t\p{C}]/u))
+      return `'${text}'`;
+
+    if (!text.match(/'/)) {
+      return `$'${text.replace(/[\t\p{C}]/u, getEscapedControlChar)}'`;
+    } else {
+      return `"${text.replace(/["$\t\p{C}]/u, getEscapedDblChar)}"`;
+    }
   };
 
   switch (argumentSegment.type) {
@@ -108,7 +138,7 @@ export function stringifyArgumentSegment(argumentSegment: ArgumentSegment): stri
       return argumentSegment.pattern;
 
     case `shell`:
-      return doubleQuoteIfRequested(`\${${stringifyShellLine(argumentSegment.shell)}}`, argumentSegment.quoted);
+      return doubleQuoteIfRequested(`$(${stringifyShellLine(argumentSegment.shell)})`, argumentSegment.quoted);
 
     case `variable`:
       return doubleQuoteIfRequested(
@@ -133,7 +163,7 @@ export function stringifyArgumentSegment(argumentSegment: ArgumentSegment): stri
 }
 
 export function stringifyArithmeticExpression(argument: ArithmeticExpression): string {
-  const getOperator = (type: ArithmeticExpression['type']) => {
+  const getOperator = (type: ArithmeticExpression[`type`]) => {
     switch (type) {
       case `addition`:
         return `+`;
