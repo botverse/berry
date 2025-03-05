@@ -1,7 +1,6 @@
 {
   "name": "@yarnpkg/pnpify",
-  "version": "4.0.0-rc.42",
-  "stableVersion": "3.1.6",
+  "version": "4.1.4",
   "license": "BSD-2-Clause",
   "main": "./sources/index.ts",
   "bin": "./sources/boot-cli-dev.js",
@@ -16,7 +15,7 @@
     "@yarnpkg/core": "workspace:^",
     "@yarnpkg/fslib": "workspace:^",
     "@yarnpkg/nm": "workspace:^",
-    "clipanion": "^3.2.0-rc.10",
+    "clipanion": "^4.0.0-rc.2",
     "tslib": "^2.4.0"
   },
   "devDependencies": {
@@ -45,10 +44,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "ssh://git@github.com/yarnpkg/berry.git",
+    "url": "git+https://github.com/yarnpkg/berry.git",
     "directory": "packages/yarnpkg-pnpify"
   },
   "engines": {
-    "node": ">=14.15.0"
-  }
+    "node": ">=18.12.0"
+  },
+  "stableVersion": "4.1.4"
 }

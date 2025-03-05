@@ -229,7 +229,7 @@ export default class InfoCommand extends BaseCommand {
     const fetcher = configuration.makeFetcher();
     const fetcherOptions: FetchOptions = {project, fetcher, cache, checksums: project.storedChecksums, report: new ThrowReport(), cacheOptions: {skipIntegrityCheck: true}};
 
-    const builtinInfoBuilders: Array<Exclude<Hooks['fetchPackageInfo'], undefined>> = [
+    const builtinInfoBuilders: Array<Exclude<Hooks[`fetchPackageInfo`], undefined>> = [
       // Manifest fields
       async (pkg, extra, registerData) => {
         if (!extra.has(`manifest`))
@@ -255,18 +255,13 @@ export default class InfoCommand extends BaseCommand {
         if (!extra.has(`cache`))
           return;
 
-        const cacheOptions = {
-          mockedPackages: project.disabledLocators,
-          unstablePackages: project.conditionalLocators,
-        };
-
         const checksum = project.storedChecksums.get(pkg.locatorHash) ?? null;
-        const cachePath = cache.getLocatorPath(pkg, checksum, cacheOptions);
+        const cachePath = cache.getLocatorPath(pkg, checksum);
 
         let stat;
         if (cachePath !== null) {
           try {
-            stat = xfs.statSync(cachePath);
+            stat = await xfs.statPromise(cachePath);
           } catch {}
         }
 

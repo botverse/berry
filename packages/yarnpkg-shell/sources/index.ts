@@ -4,15 +4,13 @@ import {EnvSegment, ArithmeticExpression, ArithmeticPrimary}                    
 import chalk                                                                                                from 'chalk';
 import {homedir}                                                                                            from 'os';
 import {PassThrough, Readable, Writable}                                                                    from 'stream';
-import {promisify}                                                                                          from 'util';
+import {setTimeout}                                                                                         from 'timers/promises';
 
 import EntryCommand                                                                                         from './commands/entry';
 import {ShellError}                                                                                         from './errors';
 import * as globUtils                                                                                       from './globUtils';
 import {createOutputStreamsWithPrefix, makeBuiltin, makeProcess}                                            from './pipe';
 import {Handle, ProcessImplementation, ProtectedStream, Stdio, start, Pipe}                                 from './pipe';
-
-const setTimeoutPromise = promisify(setTimeout);
 
 export {EntryCommand};
 export {ShellError};
@@ -165,7 +163,16 @@ const BUILTINS = new Map<string, ShellBuiltin>([
     if (Number.isNaN(seconds))
       throw new ShellError(`sleep: invalid time interval '${time}'`);
 
-    return await setTimeoutPromise(1000 * seconds, 0);
+    return await setTimeout(1000 * seconds, 0);
+  }],
+
+  [`unset`, async (args: Array<string>, opts: ShellOptions, state: ShellState) => {
+    for (const name of args) {
+      delete state.environment[name];
+      delete state.variables[name];
+    }
+
+    return 0;
   }],
 
   [`__ysh_run_procedure`, async (args: Array<string>, opts: ShellOptions, state: ShellState) => {
@@ -375,7 +382,7 @@ async function applyEnvVariables(environmentSegments: Array<EnvSegment>, opts: S
   return interpolatedEnvs.reduce((envs, env) => {
     envs[env.name] = env.value;
     return envs;
-  }, {} as ShellState['environment']);
+  }, {} as ShellState[`environment`]);
 }
 
 function split(raw: string) {
@@ -438,9 +445,9 @@ async function evaluateVariable(segment: ArgumentSegment & {type: `variable`}, o
           raw = opts.args[argIndex];
         }
       } else {
-        if (Object.prototype.hasOwnProperty.call(state.variables, segment.name)) {
+        if (Object.hasOwn(state.variables, segment.name)) {
           raw = state.variables[segment.name];
-        } else if (Object.prototype.hasOwnProperty.call(state.environment, segment.name)) {
+        } else if (Object.hasOwn(state.environment, segment.name)) {
           raw = state.environment[segment.name];
         }
       }
@@ -703,7 +710,7 @@ function makeActionFromProcedure(procedure: ProcessImplementation, args: Array<s
     let key;
     do {
       key = String(Math.random());
-    } while (Object.prototype.hasOwnProperty.call(activeState.procedures, key));
+    } while (Object.hasOwn(activeState.procedures, key));
 
     activeState.procedures = {...activeState.procedures};
     activeState.procedures[key] = procedure;
@@ -1047,9 +1054,9 @@ export async function execute(command: string, args: Array<string> = [], {
     if (chain.type === `command`) {
       chain.args = chain.args.concat(args.map(arg => {
         return {
-          type: `argument` as 'argument',
+          type: `argument` as `argument`,
           segments: [{
-            type: `text` as 'text',
+            type: `text` as `text`,
             text: arg,
           }],
         };

@@ -9,8 +9,8 @@ import * as structUtils                                   from './structUtils';
 import {Ident, Descriptor}                                from './types';
 import {IdentHash}                                        from './types';
 
-export type AllDependencies = 'dependencies' | 'devDependencies' | 'peerDependencies';
-export type HardDependencies = 'dependencies' | 'devDependencies';
+export type AllDependencies = `dependencies` | `devDependencies` | `peerDependencies`;
+export type HardDependencies = `dependencies` | `devDependencies`;
 
 export interface WorkspaceDefinition {
   pattern: string;
@@ -54,7 +54,7 @@ export class Manifest {
   public type: string | null = null;
 
   public packageManager: string | null = null;
-  public ["private"]: boolean = false;
+  public [`private`]: boolean = false;
   public license: string | null = null;
 
   public main: PortablePath | null = null;
@@ -170,7 +170,7 @@ export class Manifest {
     if (typeof data.name === `string`) {
       try {
         this.name = structUtils.parseIdent(data.name);
-      } catch (error) {
+      } catch {
         errors.push(new Error(`Parsing failed for the 'name' field`));
       }
     }
@@ -278,14 +278,16 @@ export class Manifest {
 
     this.bin = new Map();
     if (typeof data.bin === `string`) {
-      if (this.name !== null) {
+      if (data.bin.trim() === ``) {
+        errors.push(new Error(`Invalid bin field`));
+      } else if (this.name !== null) {
         this.bin.set(this.name.name, normalizeSlashes(data.bin));
       } else {
         errors.push(new Error(`String bin field, but no attached package name`));
       }
     } else if (typeof data.bin === `object` && data.bin !== null) {
       for (const [key, value] of Object.entries(data.bin)) {
-        if (typeof value !== `string`) {
+        if (typeof value !== `string` || value.trim() === ``) {
           errors.push(new Error(`Invalid bin definition for '${key}'`));
           continue;
         }
@@ -332,7 +334,7 @@ export class Manifest {
         let ident;
         try {
           ident = structUtils.parseIdent(name);
-        } catch (error) {
+        } catch {
           errors.push(new Error(`Parsing failed for the dependency name '${name}'`));
           continue;
         }
@@ -353,7 +355,7 @@ export class Manifest {
         let ident;
         try {
           ident = structUtils.parseIdent(name);
-        } catch (error) {
+        } catch {
           errors.push(new Error(`Parsing failed for the dependency name '${name}'`));
           continue;
         }
@@ -369,7 +371,7 @@ export class Manifest {
         let ident;
         try {
           ident = structUtils.parseIdent(name);
-        } catch (error) {
+        } catch {
           errors.push(new Error(`Parsing failed for the dependency name '${name}'`));
           continue;
         }
@@ -593,7 +595,7 @@ export class Manifest {
         let ident;
         try {
           ident = structUtils.parseIdent(name);
-        } catch (error) {
+        } catch {
           errors.push(new Error(`Parsing failed for the dependency name '${name}'`));
           continue;
         }
@@ -720,10 +722,10 @@ export class Manifest {
 
   setRawField(name: string, value: any, {after = []}: {after?: Array<string>} = {}) {
     const afterSet = new Set(after.filter(key => {
-      return Object.prototype.hasOwnProperty.call(this.raw, key);
+      return Object.hasOwn(this.raw, key);
     }));
 
-    if (afterSet.size === 0 || Object.prototype.hasOwnProperty.call(this.raw, name)) {
+    if (afterSet.size === 0 || Object.hasOwn(this.raw, name)) {
       this.raw[name] = value;
     } else {
       const oldRaw = this.raw;

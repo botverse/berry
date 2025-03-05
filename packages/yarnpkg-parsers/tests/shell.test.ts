@@ -172,6 +172,9 @@ describe(`Shell parser`, () => {
 
 const STRINGIFIER_TESTS: Array<[string, string]> = [
   [`echo foo`, `echo foo`],
+  [`echo parapapa`, `echo parapapa`],
+  [`echo 'foo bar'`, `echo 'foo bar'`],
+  [`echo "foo' bar'"`, `echo "foo' bar'"`],
   [`echo foo; echo bar`, `echo foo; echo bar`],
   [`echo foo; echo bar;`, `echo foo; echo bar`],
   [`echo foo &`, `echo foo &`],
@@ -183,6 +186,7 @@ const STRINGIFIER_TESTS: Array<[string, string]> = [
   [`echo foo > bar`, `echo foo > bar`],
   [`echo a$B"c"'d'`, `echo a\${B}cd`],
   [`echo a$B"c"'d'`, `echo a\${B}cd`],
+  [`echo $(echo a)`, `echo $(echo a)`],
   [`echo $(( 1 + 2 * 3 - 4 / 5 ))`, `echo $(( ( 1 + ( 2 * 3 ) ) - ( 4 / 5 ) ))`],
   [`echo $(( 7 - 2 - 3 * 5 / 6 ))`, `echo $(( ( 7 - 2 ) - ( ( 3 * 5 ) / 6 ) ))`],
   [`(echo foo && echo bar)`, `(echo foo && echo bar)`],
@@ -190,7 +194,7 @@ const STRINGIFIER_TESTS: Array<[string, string]> = [
   [`FOO=bar echo foo`, `FOO=bar echo foo`],
   [`FOO=bar BAZ=qux`, `FOO=bar BAZ=qux`],
   [`FOO=$'\\x09'`, `FOO=$'\\t'`],
-  [`FOO=$'\\u0027'`, `FOO=$'\\''`],
+  [`FOO=$'\\u0027'`, `FOO="'"`],
   [`FOO=$'\\U0001F601'`, `FOO=😁`],
 ];
 

@@ -1,4 +1,4 @@
-# https://yarnpkg.com/getting-started/qa/#which-files-should-be-gitignored
+# https://yarnpkg.com/getting-started/qa#which-files-should-be-gitignored
 .yarn/*
 !.yarn/cache
 !.yarn/patches
@@ -30,6 +30,7 @@ package.tgz
 
 # Those files are meant to be local-only
 /packages/*/bundles
+/packages/yarnpkg-pnp/sources/hook.raw.js
 
 # Those folders are meant to contain the prepack build artifacts; we don't commit them
 /packages/*/lib/*
@@ -38,8 +39,8 @@ package.tgz
 /packages/yarnpkg-libui/sources/**/*.js
 /packages/yarnpkg-libui/sources/**/*.d.ts
 
-# Only contains the Webpack cache
-/packages/docusaurus/.yarn
+# Used by /scripts/stable-versions-store.js
+/scripts/stable-versions-store.json
 
 /vscode-case-study
 
