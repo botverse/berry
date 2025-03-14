@@ -1,6 +1,6 @@
 import {ppath, Filename}                                                                                                                                                                   from '@yarnpkg/fslib';
 import {FakeFS, NativePath, PortablePath, VirtualFS, npath}                                                                                                                                from '@yarnpkg/fslib';
-import {Module}                                                                                                                                                                            from 'module';
+import {Module, isBuiltin}                                                                                                                                                                 from 'module';
 import {fileURLToPath, pathToFileURL}                                                                                                                                                      from 'url';
 import {inspect}                                                                                                                                                                           from 'util';
 
@@ -26,7 +26,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
   const pathRegExp = /^(?![a-zA-Z]:[\\/]|\\\\|\.{0,2}(?:\/|$))((?:node:)?(?:@[^/]+\/)?[^/]+)\/*(.*|)$/;
 
   // Matches if the path starts with a valid path qualifier (./, ../, /)
-  // eslint-disable-next-line no-unused-vars
+
   const isStrictRegExp = /^(\/|\.{1,2}(\/|$))/;
 
   // Matches if the path must point to a directory (ie ends with /)
@@ -267,7 +267,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
     try {
       candidates.push(unqualifiedPath);
       stat = opts.fakeFs.statSync(unqualifiedPath);
-    } catch (error) {}
+    } catch {}
 
     // If the file exists and is a file, we can stop right there
 
@@ -281,7 +281,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
 
       try {
         pkgJson = JSON.parse(opts.fakeFs.readFileSync(ppath.join(unqualifiedPath, Filename.manifest), `utf8`));
-      } catch (error) {}
+      } catch {}
 
       let nextUnqualifiedPath;
 
@@ -336,7 +336,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
    */
 
   function makeFakeModule(path: NativePath): NodeModule {
-    // @ts-expect-error
+    // @ts-expect-error - reason TBS
     const fakeModule = new Module(path, null);
     fakeModule.filename = path;
     fakeModule.paths = Module._nodeModulePaths(path);
@@ -557,7 +557,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
       return npath.toPortablePath(opts.pnpapiResolution);
 
     // Bailout if the request is a native module
-    if (considerBuiltins && nodeUtils.isBuiltinModule(request))
+    if (considerBuiltins && isBuiltin(request))
       return null;
 
     const requestForDisplay = getPathForDisplay(request);
@@ -726,7 +726,7 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
           }
         }
       } else if (dependencyReference === undefined) {
-        if (!considerBuiltins && nodeUtils.isBuiltinModule(request)) {
+        if (!considerBuiltins && isBuiltin(request)) {
           if (isDependencyTreeRoot(issuerLocator)) {
             error = makeError(
               ErrorCode.UNDECLARED_DEPENDENCY,
@@ -926,13 +926,13 @@ export function makeApi(runtimeState: RuntimeState, opts: MakeApiOptions): PnpAp
           ? isPathIgnored(issuer)
           : false;
 
-      const remappedPath = (!considerBuiltins || !nodeUtils.isBuiltinModule(request)) && !isIssuerIgnored()
+      const remappedPath = (!considerBuiltins || !isBuiltin(request)) && !isIssuerIgnored()
         ? resolveUnqualifiedExport(request, unqualifiedPath, conditions, issuer)
         : unqualifiedPath;
 
       return resolveUnqualified(remappedPath, {extensions});
     } catch (error) {
-      if (Object.prototype.hasOwnProperty.call(error, `pnpCode`))
+      if (Object.hasOwn(error, `pnpCode`))
         Object.assign(error.data, {request: getPathForDisplay(request), issuer: issuer && getPathForDisplay(issuer)});
 
       throw error;

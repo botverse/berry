@@ -1,12 +1,21 @@
-import {NativePath, PortablePath}     from '@yarnpkg/fslib';
-import fs                             from 'fs';
-import moduleExports                  from 'module';
-import {fileURLToPath, pathToFileURL} from 'url';
+import {PortablePath}                        from '@yarnpkg/fslib';
+import fs                                    from 'fs';
+import esmModule, {createRequire, isBuiltin} from 'module';
+import {fileURLToPath, pathToFileURL}        from 'url';
 
-import * as nodeUtils                 from '../../loader/nodeUtils';
-import {packageImportsResolve}        from '../../node/resolve';
-import {PnpApi}                       from '../../types';
-import * as loaderUtils               from '../loaderUtils';
+import {packageImportsResolve}               from '../../node/resolve';
+import * as loaderUtils                      from '../loaderUtils';
+
+let findPnpApi: any = (esmModule as any).findPnpApi;
+if (!findPnpApi) {
+  // @ts-expect-error - reason TBS
+  const require = createRequire(import.meta.url);
+
+  const pnpApi = require(`./.pnp.cjs`);
+  pnpApi.setup();
+
+  findPnpApi = (esmModule as any).findPnpApi;
+}
 
 const pathRegExp = /^(?![a-zA-Z]:[\\/]|\\\\|\.{0,2}(?:\/|$))((?:node:)?(?:@[^/]+\/)?[^/]+)\/*(.*|)$/;
 const isRelativeRegexp = /^\.{0,2}\//;
@@ -27,7 +36,7 @@ function tryReadFile(filePath: string) {
   }
 }
 
-async function resolvePrivateRequest(specifier: string, issuer: string, context: ResolveContext, nextResolve: typeof resolve): Promise<{ url: string, shortCircuit: boolean }> {
+async function resolvePrivateRequest(specifier: string, issuer: string, context: ResolveContext, nextResolve: typeof resolve): Promise<{url: string, shortCircuit: boolean}> {
   const resolved = packageImportsResolve({
     name: specifier,
     base: pathToFileURL(issuer),
@@ -51,9 +60,8 @@ export async function resolve(
   originalSpecifier: string,
   context: ResolveContext,
   nextResolve: typeof resolve,
-): Promise<{ url: string, shortCircuit: boolean }> {
-  const {findPnpApi} = (moduleExports as unknown) as { findPnpApi?: (path: NativePath) => null | PnpApi };
-  if (!findPnpApi || nodeUtils.isBuiltinModule(originalSpecifier))
+): Promise<{url: string, shortCircuit: boolean}> {
+  if (!findPnpApi || isBuiltin(originalSpecifier))
     return nextResolve(originalSpecifier, context, nextResolve);
 
   let specifier = originalSpecifier;
@@ -67,7 +75,7 @@ export async function resolve(
 
   const {parentURL, conditions = []} = context;
 
-  const issuer = parentURL ? fileURLToPath(parentURL) : process.cwd();
+  const issuer = parentURL && loaderUtils.tryParseURL(parentURL)?.protocol === `file:` ? fileURLToPath(parentURL) : process.cwd();
 
   // Get the pnpapi of either the issuer or the specifier.
   // The latter is required when the specifier is an absolute path to a
@@ -100,11 +108,19 @@ export async function resolve(
     }
   }
 
-  const result = pnpapi.resolveRequest(specifier, issuer, {
-    conditions: new Set(conditions),
-    // TODO: Handle --experimental-specifier-resolution=node
-    extensions: allowLegacyResolve ? undefined : [],
-  });
+  let result;
+  try {
+    result = pnpapi.resolveRequest(specifier, issuer, {
+      conditions: new Set(conditions),
+      // TODO: Handle --experimental-specifier-resolution=node
+      extensions: allowLegacyResolve ? undefined : [],
+    });
+  } catch (err) {
+    if (err instanceof Error && `code` in err && err.code === `MODULE_NOT_FOUND`)
+      err.code = `ERR_MODULE_NOT_FOUND`;
+
+    throw err;
+  }
 
   if (!result)
     throw new Error(`Resolving '${specifier}' from '${issuer}' failed`);

@@ -159,9 +159,9 @@ export class PnpInstaller implements Installer {
       dependencyMeta = this.opts.project.getDependencyMeta(devirtualizedLocator, pkg.version);
     }
 
-    const buildScripts = mayNeedToBeBuilt
-      ? jsInstallUtils.extractBuildScripts(pkg, customPackageData!, dependencyMeta!, {configuration: this.opts.project.configuration, report: this.opts.report})
-      : [];
+    const buildRequest = mayNeedToBeBuilt
+      ? jsInstallUtils.extractBuildRequest(pkg, customPackageData!, dependencyMeta!, {configuration: this.opts.project.configuration})
+      : null;
 
     const packageFs = mayNeedToBeUnplugged
       ? await this.unplugPackageIfNeeded(pkg, customPackageData!, fetchResult, dependencyMeta!, api)
@@ -205,7 +205,7 @@ export class PnpInstaller implements Installer {
 
     return {
       packageLocation: packageRawLocation,
-      buildDirective: buildScripts.length > 0 ? buildScripts : null,
+      buildRequest,
     };
   }
 
@@ -257,10 +257,6 @@ export class PnpInstaller implements Installer {
         discardFromLookup: false,
       });
     }
-
-    this.packageRegistry.set(null, new Map([
-      [null, this.getPackageInformation(this.opts.project.topLevelWorkspace.anchoredLocator)],
-    ]));
 
     const pnpFallbackMode = this.opts.project.configuration.get(`pnpFallbackMode`);
 
@@ -423,7 +419,8 @@ export class PnpInstaller implements Installer {
     if (customPackageData.manifest.preferUnplugged !== null)
       return customPackageData.manifest.preferUnplugged;
 
-    if (jsInstallUtils.extractBuildScripts(pkg, customPackageData, dependencyMeta, {configuration: this.opts.project.configuration}).length > 0 || customPackageData.misc.extractHint)
+    const buildRequest = jsInstallUtils.extractBuildRequest(pkg, customPackageData, dependencyMeta, {configuration: this.opts.project.configuration});
+    if (buildRequest?.skipped === false || customPackageData.misc.extractHint)
       return true;
 
     return false;
@@ -493,7 +490,7 @@ function normalizeDirectoryPath(root: PortablePath, folder: PortablePath) {
   return relativeFolder.replace(/\/?$/, `/`)  as PortablePath;
 }
 
-type UnboxPromise<T extends Promise<any>> = T extends Promise<infer U> ? U: never;
+type UnboxPromise<T extends Promise<any>> = T extends Promise<infer U> ? U : never;
 type CustomPackageData = UnboxPromise<ReturnType<typeof extractCustomPackageData>>;
 
 async function extractCustomPackageData(fetchResult: FetchResult) {

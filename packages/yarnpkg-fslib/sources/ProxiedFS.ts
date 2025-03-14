@@ -1,9 +1,9 @@
-import {Stats, BigIntStats}                                                                                                                                   from 'fs';
+import {Stats, BigIntStats}                                                                                                                                                                 from 'fs';
 
-import {CreateReadStreamOptions, CreateWriteStreamOptions, FakeFS, ExtractHintOptions, WatchFileCallback, WatchFileOptions, StatWatcher, Dir, OpendirOptions} from './FakeFS';
-import {Dirent, SymlinkType, StatSyncOptions, StatOptions}                                                                                                    from './FakeFS';
-import {MkdirOptions, RmdirOptions, WriteFileOptions, WatchCallback, WatchOptions, Watcher}                                                                   from './FakeFS';
-import {FSPath, Filename, Path}                                                                                                                               from './path';
+import {CreateReadStreamOptions, CreateWriteStreamOptions, FakeFS, ExtractHintOptions, WatchFileCallback, WatchFileOptions, StatWatcher, Dir, OpendirOptions, ReaddirOptions, DirentNoPath} from './FakeFS';
+import {Dirent, SymlinkType, StatSyncOptions, StatOptions}                                                                                                                                  from './FakeFS';
+import {MkdirOptions, RmdirOptions, RmOptions, WriteFileOptions, WatchCallback, WatchOptions, Watcher}                                                                                      from './FakeFS';
+import {FSPath, Filename, Path}                                                                                                                                                             from './path';
 
 export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<P> {
   protected abstract readonly baseFs: FakeFS<IP>;
@@ -116,8 +116,8 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
 
   // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/51d793492d4c2e372b01257668dcd3afc58d7352/types/node/v16/fs.d.ts#L1042-L1059
   async statPromise(p: P): Promise<Stats>;
-  async statPromise(p: P, opts: (StatOptions & { bigint?: false | undefined }) | undefined): Promise<Stats>;
-  async statPromise(p: P, opts: StatOptions & { bigint: true }): Promise<BigIntStats>;
+  async statPromise(p: P, opts: (StatOptions & {bigint?: false | undefined}) | undefined): Promise<Stats>;
+  async statPromise(p: P, opts: StatOptions & {bigint: true}): Promise<BigIntStats>;
   async statPromise(p: P, opts?: StatOptions): Promise<Stats | BigIntStats> {
     return this.baseFs.statPromise(this.mapToBase(p), opts);
   }
@@ -133,24 +133,24 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
     return this.baseFs.statSync(this.mapToBase(p), opts);
   }
 
-  async fstatPromise(fd: number): Promise<Stats>
-  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>
-  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>
+  async fstatPromise(fd: number): Promise<Stats>;
+  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>;
+  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
   async fstatPromise(fd: number, opts?: {bigint: boolean}) {
     return this.baseFs.fstatPromise(fd, opts);
   }
 
-  fstatSync(fd: number): Stats
-  fstatSync(fd: number, opts: {bigint: true}): BigIntStats
-  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats
+  fstatSync(fd: number): Stats;
+  fstatSync(fd: number, opts: {bigint: true}): BigIntStats;
+  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats;
   fstatSync(fd: number, opts?: {bigint: boolean}) {
     return this.baseFs.fstatSync(fd, opts);
   }
 
   // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/51d793492d4c2e372b01257668dcd3afc58d7352/types/node/v16/fs.d.ts#L1042-L1059
   lstatPromise(p: P): Promise<Stats>;
-  lstatPromise(p: P, opts: (StatOptions & { bigint?: false | undefined }) | undefined): Promise<Stats>;
-  lstatPromise(p: P, opts: StatOptions & { bigint: true }): Promise<BigIntStats>;
+  lstatPromise(p: P, opts: (StatOptions & {bigint?: false | undefined}) | undefined): Promise<Stats>;
+  lstatPromise(p: P, opts: StatOptions & {bigint: true}): Promise<BigIntStats>;
   lstatPromise(p: P, opts?: StatOptions): Promise<Stats | BigIntStats> {
     return this.baseFs.lstatPromise(this.mapToBase(p), opts);
   }
@@ -161,7 +161,7 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
   lstatSync(p: P, opts: StatSyncOptions & {bigint: true, throwIfNoEntry: false}): BigIntStats | undefined;
   lstatSync(p: P, opts?: StatSyncOptions & {bigint?: false | undefined}): Stats;
   lstatSync(p: P, opts: StatSyncOptions & {bigint: true}): BigIntStats;
-  lstatSync(p: P, opts: StatSyncOptions & { bigint: boolean, throwIfNoEntry?: false | undefined }): Stats | BigIntStats;
+  lstatSync(p: P, opts: StatSyncOptions & {bigint: boolean, throwIfNoEntry?: false | undefined}): Stats | BigIntStats;
   lstatSync(p: P, opts?: StatSyncOptions): Stats | BigIntStats | undefined {
     return this.baseFs.lstatSync(this.mapToBase(p), opts);
   }
@@ -270,6 +270,14 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
     return this.baseFs.rmdirSync(this.mapToBase(p), opts);
   }
 
+  async rmPromise(p: P, opts?: RmOptions) {
+    return this.baseFs.rmPromise(this.mapToBase(p), opts);
+  }
+
+  rmSync(p: P, opts?: RmOptions) {
+    return this.baseFs.rmSync(this.mapToBase(p), opts);
+  }
+
   async linkPromise(existingP: P, newP: P) {
     return this.baseFs.linkPromise(this.mapToBase(existingP), this.mapToBase(newP));
   }
@@ -316,19 +324,31 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
     return this.baseFs.readFileSync(this.fsMapToBase(p), encoding);
   }
 
-  async readdirPromise(p: P): Promise<Array<Filename>>;
-  async readdirPromise(p: P, opts: {withFileTypes: false} | null): Promise<Array<Filename>>;
-  async readdirPromise(p: P, opts: {withFileTypes: true}): Promise<Array<Dirent>>;
-  async readdirPromise(p: P, opts: {withFileTypes: boolean}): Promise<Array<Filename> | Array<Dirent>>;
-  async readdirPromise(p: P, opts?: {withFileTypes?: boolean} | null): Promise<Array<string> | Array<Dirent>> {
+  readdirPromise(p: P, opts?: null): Promise<Array<Filename>>;
+  readdirPromise(p: P, opts: {recursive?: false, withFileTypes: true}): Promise<Array<DirentNoPath>>;
+  readdirPromise(p: P, opts: {recursive?: false, withFileTypes?: false}): Promise<Array<Filename>>;
+  readdirPromise(p: P, opts: {recursive?: false, withFileTypes: boolean}): Promise<Array<DirentNoPath | Filename>>;
+  readdirPromise(p: P, opts: {recursive: true, withFileTypes: true}): Promise<Array<Dirent<P>>>;
+  readdirPromise(p: P, opts: {recursive: true, withFileTypes?: false}): Promise<Array<P>>;
+  readdirPromise(p: P, opts: {recursive: true, withFileTypes: boolean}): Promise<Array<Dirent<P> | P>>;
+  readdirPromise(p: P, opts: {recursive: boolean, withFileTypes: true}): Promise<Array<Dirent<P> | DirentNoPath>>;
+  readdirPromise(p: P, opts: {recursive: boolean, withFileTypes?: false}): Promise<Array<P>>;
+  readdirPromise(p: P, opts: {recursive: boolean, withFileTypes: boolean}): Promise<Array<Dirent<P> | DirentNoPath | P>>;
+  readdirPromise(p: P, opts?: ReaddirOptions | null): Promise<Array<Dirent<P> | DirentNoPath | P | Filename>> {
     return this.baseFs.readdirPromise(this.mapToBase(p), opts as any);
   }
 
-  readdirSync(p: P): Array<Filename>;
-  readdirSync(p: P, opts: {withFileTypes: false} | null): Array<Filename>;
-  readdirSync(p: P, opts: {withFileTypes: true}): Array<Dirent>;
-  readdirSync(p: P, opts: {withFileTypes: boolean}): Array<Filename> | Array<Dirent>;
-  readdirSync(p: P, opts?: {withFileTypes?: boolean} | null): Array<string> | Array<Dirent> {
+  readdirSync(p: P, opts?: null): Array<Filename>;
+  readdirSync(p: P, opts: {recursive?: false, withFileTypes: true}): Array<DirentNoPath>;
+  readdirSync(p: P, opts: {recursive?: false, withFileTypes?: false}): Array<Filename>;
+  readdirSync(p: P, opts: {recursive?: false, withFileTypes: boolean}): Array<DirentNoPath | Filename>;
+  readdirSync(p: P, opts: {recursive: true, withFileTypes: true}): Array<Dirent<P>>;
+  readdirSync(p: P, opts: {recursive: true, withFileTypes?: false}): Array<P>;
+  readdirSync(p: P, opts: {recursive: true, withFileTypes: boolean}): Array<Dirent<P> | P>;
+  readdirSync(p: P, opts: {recursive: boolean, withFileTypes: true}): Array<Dirent<P> | DirentNoPath>;
+  readdirSync(p: P, opts: {recursive: boolean, withFileTypes?: false}): Array<P>;
+  readdirSync(p: P, opts: {recursive: boolean, withFileTypes: boolean}): Array<Dirent<P> | DirentNoPath | P>;
+  readdirSync(p: P, opts?: ReaddirOptions | null): Array<Dirent<P> | DirentNoPath | P | Filename> {
     return this.baseFs.readdirSync(this.mapToBase(p), opts as any);
   }
 
@@ -361,7 +381,7 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
   watch(p: P, a?: WatchOptions | WatchCallback, b?: WatchCallback) {
     return this.baseFs.watch(
       this.mapToBase(p),
-      // @ts-expect-error
+      // @ts-expect-error - reason TBS
       a,
       b,
     );
@@ -372,7 +392,7 @@ export abstract class ProxiedFS<P extends Path, IP extends Path> extends FakeFS<
   watchFile(p: P, a: WatchFileOptions | WatchFileCallback, b?: WatchFileCallback) {
     return this.baseFs.watchFile(
       this.mapToBase(p),
-      // @ts-expect-error
+      // @ts-expect-error - reason TBS
       a,
       b,
     );

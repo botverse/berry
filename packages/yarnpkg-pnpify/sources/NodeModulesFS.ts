@@ -1,5 +1,6 @@
+import {BigIntStats, DirentNoPath, ReaddirOptions, Stats}                                                                          from '@yarnpkg/fslib';
 import {Dirent, Filename, MkdirOptions, ExtractHintOptions, WatchFileCallback, WatchFileOptions, StatWatcher, OpendirOptions, Dir} from '@yarnpkg/fslib';
-import {RmdirOptions}                                                                                                              from '@yarnpkg/fslib';
+import {RmdirOptions, RmOptions}                                                                                                   from '@yarnpkg/fslib';
 import {FSPath, NativePath, PortablePath, npath, ppath, opendir}                                                                   from '@yarnpkg/fslib';
 import {WatchOptions, WatchCallback, Watcher}                                                                                      from '@yarnpkg/fslib';
 import {NodeFS, FakeFS, WriteFileOptions, ProxiedFS}                                                                               from '@yarnpkg/fslib';
@@ -7,7 +8,7 @@ import {CreateReadStreamOptions, CreateWriteStreamOptions}                      
 import {NodeModulesTreeOptions, NodeModulesTree}                                                                                   from '@yarnpkg/nm';
 import {buildNodeModulesTree}                                                                                                      from '@yarnpkg/nm';
 import {PnpApi}                                                                                                                    from '@yarnpkg/pnp';
-import fs, {BigIntStats, Stats}                                                                                                    from 'fs';
+import fs                                                                                                                          from 'fs';
 
 import {WatchManager}                                                                                                              from './WatchManager';
 import {dynamicRequireNoCache}                                                                                                     from './dynamicRequire';
@@ -115,7 +116,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     return this.baseFs;
   }
 
-  private resolvePath(p: PortablePath): ResolvedPath & { fullOriginalPath: PortablePath } {
+  private resolvePath(p: PortablePath): ResolvedPath & {fullOriginalPath: PortablePath} {
     if (typeof p === `number`) {
       return {resolvedPath: p, fullOriginalPath: p};
     } else {
@@ -161,7 +162,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
       let stat;
       try {
         stat = this.baseFs.lstatSync(pnpPath.resolvedPath, statOptions);
-      } catch (e) {}
+      } catch {}
 
       if (stat) {
         return onSymlink(stat, this.pathUtils.relative(this.pathUtils.dirname(pnpPath.fullOriginalPath), pnpPath.resolvedPath));
@@ -200,9 +201,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
       let fsDirList: Array<Filename> = [];
       try {
         fsDirList = await this.baseFs.readdirPromise(pnpPath.resolvedPath);
-      } catch (e) {
-        // Ignore errors
-      }
+      } catch {}
       const entries = Array.from(pnpPath.dirList || [`node_modules` as Filename]).concat(fsDirList).sort();
 
       return opendir(this, p, entries);
@@ -217,9 +216,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
       let fsDirList: Array<Filename> = [];
       try {
         fsDirList = this.baseFs.readdirSync(pnpPath.resolvedPath);
-      } catch (e) {
-        // Ignore errors
-      }
+      } catch {}
       const entries = Array.from(pnpPath.dirList || [`node_modules` as Filename]).concat(fsDirList).sort();
 
       return opendir(this, p, entries);
@@ -308,38 +305,38 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     return this.baseFs.accessSync(this.resolveDirOrFilePath(p), mode);
   }
 
-  async statPromise(p: PortablePath): Promise<Stats>
-  async statPromise(p: PortablePath, opts: {bigint: true}): Promise<BigIntStats>
-  async statPromise(p: PortablePath, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>
+  async statPromise(p: PortablePath): Promise<Stats>;
+  async statPromise(p: PortablePath, opts: {bigint: true}): Promise<BigIntStats>;
+  async statPromise(p: PortablePath, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
   async statPromise(p: PortablePath, opts?: {bigint: boolean}) {
     return await this.baseFs.statPromise(this.resolveDirOrFilePath(p), opts);
   }
 
-  statSync(p: PortablePath): Stats
-  statSync(p: PortablePath, opts: {bigint: true}): BigIntStats
-  statSync(p: PortablePath, opts?: {bigint: boolean}): BigIntStats | Stats
+  statSync(p: PortablePath): Stats;
+  statSync(p: PortablePath, opts: {bigint: true}): BigIntStats;
+  statSync(p: PortablePath, opts?: {bigint: boolean}): BigIntStats | Stats;
   statSync(p: PortablePath, opts?: {bigint: boolean}) {
     return this.baseFs.statSync(this.resolveDirOrFilePath(p), opts);
   }
 
-  async fstatPromise(fd: number): Promise<Stats>
-  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>
-  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>
+  async fstatPromise(fd: number): Promise<Stats>;
+  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>;
+  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
   async fstatPromise(fd: number, opts?: {bigint: boolean}) {
     return await this.baseFs.fstatPromise(fd, opts);
   }
 
-  fstatSync(fd: number): Stats
-  fstatSync(fd: number, opts: {bigint: true}): BigIntStats
-  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats
+  fstatSync(fd: number): Stats;
+  fstatSync(fd: number, opts: {bigint: true}): BigIntStats;
+  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats;
   fstatSync(fd: number, opts?: {bigint: boolean}) {
     return this.baseFs.fstatSync(fd, opts);
   }
 
-  async lstatPromise(p: PortablePath): Promise<Stats>
-  async lstatPromise(p: PortablePath, opts: {bigint: true}): Promise<BigIntStats>
-  async lstatPromise(p: PortablePath, opts?: { bigint: boolean }): Promise<BigIntStats | Stats>
-  async lstatPromise(p: PortablePath, opts?: { bigint: boolean }) {
+  async lstatPromise(p: PortablePath): Promise<Stats>;
+  async lstatPromise(p: PortablePath, opts: {bigint: true}): Promise<BigIntStats>;
+  async lstatPromise(p: PortablePath, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
+  async lstatPromise(p: PortablePath, opts?: {bigint: boolean}) {
     return this.resolveLink({
       p,
       op: `lstat`,
@@ -351,8 +348,8 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
 
   lstatSync(p: PortablePath): Stats;
   lstatSync(p: PortablePath, opts: {bigint: true}): BigIntStats;
-  lstatSync(p: PortablePath, opts?: { bigint: boolean }): BigIntStats | Stats
-  lstatSync(p: PortablePath, opts?: { bigint: boolean }): BigIntStats | Stats {
+  lstatSync(p: PortablePath, opts?: {bigint: boolean}): BigIntStats | Stats;
+  lstatSync(p: PortablePath, opts?: {bigint: boolean}): BigIntStats | Stats {
     return this.resolveLink({
       p,
       op: `lstat`,
@@ -470,6 +467,14 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     return this.baseFs.rmdirSync(this.resolveDirOrFilePath(p), opts);
   }
 
+  async rmPromise(p: PortablePath, opts?: RmOptions) {
+    return await this.baseFs.rmPromise(this.resolveDirOrFilePath(p), opts);
+  }
+
+  rmSync(p: PortablePath, opts?: RmOptions) {
+    return this.baseFs.rmSync(this.resolveDirOrFilePath(p), opts);
+  }
+
   async linkPromise(existingP: PortablePath, newP: PortablePath) {
     return await this.baseFs.linkPromise(this.resolveDirOrFilePath(existingP), this.resolveDirOrFilePath(newP));
   }
@@ -500,19 +505,27 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     return this.baseFs.readFileSync(this.resolveFilePath(p), encoding);
   }
 
-  async readdirPromise(p: PortablePath): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: false} | null): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: true}): Promise<Array<Dirent>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: boolean}): Promise<Array<Filename> | Array<Dirent>>;
-  async readdirPromise(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Promise<Array<string> | Array<Dirent>> {
+  async readdirPromise(p: PortablePath, opts?: null): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Promise<Array<DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Promise<Array<DirentNoPath | Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Promise<Array<Dirent<PortablePath>>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Promise<Array<Dirent<PortablePath> | DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts?: ReaddirOptions | null): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>> {
     const pnpPath = this.resolvePath(p);
     if (pnpPath.dirList || this.resolvePath(ppath.join(p, `node_modules`)).dirList) {
+      if (opts?.recursive)
+        throw new Error(`Unsupported option 'recursive' for NodeModulesFS.readdirPromise`);
+
       let fsDirList: Array<Filename> = [];
       try {
         fsDirList = await this.baseFs.readdirPromise(pnpPath.resolvedPath);
-      } catch (e) {
-        // Ignore errors
-      }
+      } catch {}
+
       const entries = Array.from(pnpPath.dirList || [`node_modules` as Filename]).concat(fsDirList).sort();
       if (!opts?.withFileTypes)
         return entries;
@@ -520,6 +533,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
       return entries.map(name => {
         return Object.assign(this.lstatSync(ppath.join(p, name)), {
           name,
+          path: undefined,
         });
       });
     } else {
@@ -527,19 +541,27 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     }
   }
 
-  readdirSync(p: PortablePath): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: false} | null): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: true}): Array<Dirent>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: boolean}): Array<Filename> | Array<Dirent>;
-  readdirSync(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Array<string> | Array<Dirent> {
+  readdirSync(p: PortablePath, opts?: null): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Array<DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Array<DirentNoPath | Filename>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Array<Dirent<PortablePath>>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Array<Dirent<PortablePath> | PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Array<Dirent<PortablePath> | DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Array<Dirent<PortablePath> | DirentNoPath | PortablePath>;
+  readdirSync(p: PortablePath, opts?: ReaddirOptions | null): Array<Dirent<PortablePath> | DirentNoPath | PortablePath> {
     const pnpPath = this.resolvePath(p);
     if (pnpPath.dirList || this.resolvePath(ppath.join(p, `node_modules`)).dirList) {
+      if (opts?.recursive)
+        throw new Error(`Unsupported option 'recursive' for NodeModulesFS.readdirSync`);
+
       let fsDirList: Array<Filename> = [];
       try {
         fsDirList = this.baseFs.readdirSync(pnpPath.resolvedPath);
-      } catch (e) {
-        // Ignore errors
-      }
+      } catch {}
+
       const entries = Array.from(pnpPath.dirList || [`node_modules` as Filename]).concat(fsDirList).sort();
       if (!opts?.withFileTypes)
         return entries;
@@ -547,6 +569,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
       return entries.map(name => {
         return Object.assign(this.lstatSync(ppath.join(p, name)), {
           name,
+          path: undefined,
         });
       });
     } else {
@@ -599,7 +622,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
     } else {
       return this.baseFs.watch(
         this.resolveDirOrFilePath(p),
-        // @ts-expect-error
+        // @ts-expect-error - reason TBS
         a,
         b,
       );
@@ -611,7 +634,7 @@ export class PortableNodeModulesFS extends FakeFS<PortablePath> {
   watchFile(p: PortablePath, a: WatchFileOptions | WatchFileCallback, b?: WatchFileCallback): StatWatcher {
     return this.baseFs.watchFile(
       this.resolveDirOrFilePath(p),
-      // @ts-expect-error
+      // @ts-expect-error - reason TBS
       a,
       b,
     );

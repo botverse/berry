@@ -1,21 +1,20 @@
-import {BaseCommand, WorkspaceRequiredError}                                                                                            from '@yarnpkg/cli';
-import {Cache, Configuration, Project, HardDependencies, formatUtils, miscUtils, structUtils, Descriptor, DescriptorHash, StreamReport} from '@yarnpkg/core';
-import * as libuiUtils                                                                                                                  from '@yarnpkg/libui/sources/libuiUtils';
-import type {SubmitInjectedComponent}                                                                                                   from '@yarnpkg/libui/sources/misc/renderForm';
-import {suggestUtils}                                                                                                                   from '@yarnpkg/plugin-essentials';
-import {Command, Usage}                                                                                                                 from 'clipanion';
-import {diffWords}                                                                                                                      from 'diff';
-import semver                                                                                                                           from 'semver';
-import {WriteStream}                                                                                                                    from 'tty';
+import {BaseCommand, WorkspaceRequiredError}                                                                              from '@yarnpkg/cli';
+import {Cache, Configuration, Project, HardDependencies, formatUtils, miscUtils, structUtils, Descriptor, DescriptorHash} from '@yarnpkg/core';
+import * as libuiUtils                                                                                                    from '@yarnpkg/libui/sources/libuiUtils';
+import type {SubmitInjectedComponent}                                                                                     from '@yarnpkg/libui/sources/misc/renderForm';
+import {suggestUtils}                                                                                                     from '@yarnpkg/plugin-essentials';
+import {Command, Usage}                                                                                                   from 'clipanion';
+import {diffWords}                                                                                                        from 'diff';
+import semver                                                                                                             from 'semver';
+import {WriteStream}                                                                                                      from 'tty';
 
 const SIMPLE_SEMVER = /^((?:[\^~]|>=?)?)([0-9]+)(\.[0-9]+)(\.[0-9]+)((?:-\S+)?)$/;
 
-// eslint-disable-next-line @typescript-eslint/comma-dangle -- the trailing comma is required because of parsing ambiguities
-const partition = <T,>(array: Array<T>, size: number): Array<Array<T>> => {
+function partition<T>(array: Array<T>, size: number): Array<Array<T>> {
   return array.length > 0
     ? [array.slice(0, size)].concat(partition(array.slice(size), size))
     : [];
-};
+}
 
 type UpgradeSuggestion = {value: string | null, label: string};
 type UpgradeSuggestions = Array<UpgradeSuggestion>;
@@ -327,7 +326,8 @@ export default class UpgradeInteractiveCommand extends BaseCommand {
         for (const dependencyType of [`dependencies`, `devDependencies`] as Array<HardDependencies>)
           for (const descriptor of workspace.manifest[dependencyType].values())
             if (project.tryWorkspaceByDescriptor(descriptor) === null)
-              allDependencies.set(descriptor.descriptorHash, descriptor);
+              if (!descriptor.range.startsWith(`link:`))
+                allDependencies.set(descriptor.descriptorHash, descriptor);
 
       const sortedDependencies = miscUtils.sortMap(allDependencies.values(), descriptor => {
         return structUtils.stringifyDescriptor(descriptor);
@@ -368,14 +368,11 @@ export default class UpgradeInteractiveCommand extends BaseCommand {
     if (!hasChanged)
       return 0;
 
-    const installReport = await StreamReport.start({
-      configuration,
+    return await project.installWithNewReport({
+      quiet: this.context.quiet,
       stdout: this.context.stdout,
-      includeLogs: !this.context.quiet,
-    }, async report => {
-      await project.install({cache, report});
+    }, {
+      cache,
     });
-
-    return installReport.exitCode();
   }
 }

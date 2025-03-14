@@ -4,8 +4,6 @@
  * work well for content-centric websites.
  */
 
-@import url("https://fonts.googleapis.com/css?family=PT+Sans:400,700");
-
 /**
  * We don't want html, body to have height: 100%, because it would break
  * the body background image, which we need to display the cat on the
@@ -15,6 +13,8 @@
  */
 html, body {
   height: auto !important;
+
+  --ifm-code-padding-horizontal: 0.2rem;
 }
 
 body {
@@ -22,12 +22,23 @@ body {
 }
 
 html {
-  background-image: url('/img/yarn-bg-lossless.webp');
-  background-size: 100% auto;
+  background-image: url('/img/yarn-bg-black.webp');
+  background-size: 100% 100%;
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-color: #ffffff;
 }
 
 .theme-doc-sidebar-container {
   border-right: 0 !important;
+}
+
+.container {
+  --ifm-link-decoration: underline;
+}
+
+.rjd-container {
+  --ifm-link-decoration: none;
 }
 
 .menu {
@@ -72,15 +83,13 @@ html {
   filter: invert(100%) invert(15%) sepia(39%) saturate(2287%) hue-rotate(222deg) brightness(92%) contrast(94%);
 }
 
-body:not([x-doc-route="/"]) footer {
+html:not([x-doc-route="/"]) footer {
   display: none;
 }
 
-body:not([x-doc-route="/"]) .main-wrapper > :last-child {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-
-  margin-bottom: 0;
+html.blog-wrapper .container {
+  background: white;
+  border-radius: 10px;
 }
 
 @media (max-width: 996px) {
@@ -91,8 +100,25 @@ body:not([x-doc-route="/"]) .main-wrapper > :last-child {
   }
 }
 
+.centered-icon {
+  display: flex;
+  align-items: center;
+}
+
+.centered-icon svg {
+  display: block;
+}
+
 .navbar {
   top: -1px;
+  height: auto;
+}
+
+.navbar__items {
+  flex: 1 0 min-content;
+}
+.navbar__items--right {
+  margin-left: auto;
 }
 
 .navbar__brand {
@@ -103,35 +129,57 @@ body:not([x-doc-route="/"]) .main-wrapper > :last-child {
   display: none;
 }
 
+.navbar__item {
+  /* Avoid awkward linebreaks of menu items.
+   * Labels should be kept short, however. */
+  white-space: nowrap;
+}
+
+.navbar__inner > .navbar__items:first-child {
+  /* Allow the first nav item group to scroll horizontally. */
+
+  /* Without this rule, rightmost items in first nav group
+   * would overlap leftmost items in second nav group,
+   * becoming completely unreadable. */
+
+  /* NOTE: Would NOT work as is if there is a drop-down menu. */
+  /* That’s why it’s only applied to the first nav item group:
+   * the second nav group has a dropdown, which would be cut off
+   * by this overflow rule. */
+
+  overflow-x: auto;
+}
+
+.DocSearch-Button-Placeholder {
+  /* Hide faux placeholder in the search trigger button
+   * while maintaining reasonable whitespace.
+   * This is subjective, but I believe placeholder doesn’t add
+   * useful information and makes the button visually
+   * appear as a text input field, which it is in fact not. */
+  width: 0;
+  overflow: hidden;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
 .navbar__logo {
   height: var(--ifm-navbar-height);
-}
-
-.navbar__link--active {
-  position: relative;
-}
-
-.navbar__link--active::before {
-  position: absolute;
-
-  left: var(--ifm-navbar-item-padding-horizontal);
-  right: var(--ifm-navbar-item-padding-horizontal);
-  bottom: -3px;
-
-  height: 3px;
-  background: linear-gradient(to left, #7678ff, #c326ef);
-}
-
-body[x-doc-route="/"] .navbar:not(.navbar--is-fixed) .navbar__link--active::before {
-  content: '';
 }
 
 .menu.thin-scrollbar {
   padding: 0.5rem;
 }
 
-body[x-doc-route^="/configuration/"] .col {
+html[x-doc-route^="/configuration/"] .col {
   max-width: 100% !important;
+}
+
+html.search-page-wrapper .main-wrapper > .container {
+  padding: calc(var(--ifm-spacing-horizontal) * 2);
+}
+
+html.search-page-wrapper .row {
+  padding: 0 !important;
 }
 
 .markdown table {
@@ -140,6 +188,11 @@ body[x-doc-route^="/configuration/"] .col {
   width: 100%;
 
   line-height: 1.5em;
+}
+
+.markdown pre {
+  /* Weirdly, the margin and padding seems to be messing with one another with box-sizing */
+  box-sizing: content-box;
 }
 
 .markdown .subtitle {
@@ -178,6 +231,14 @@ body[x-doc-route^="/configuration/"] .col {
   margin-bottom: 0;
 }
 
+.rjd-annotation a {
+  color: rgb(156, 220, 254);
+  text-decoration: underline;
+  text-decoration-skip-ink: auto;
+  text-decoration-color: #518dae;
+  text-underline-offset: 0.2em;
+}
+
 .rjd-annotation code {
   all: initial;
 
@@ -190,8 +251,33 @@ body[x-doc-route^="/configuration/"] .col {
   --prism-color: #f6f8fa !important;
 }
 
+pre {
+  font-size: .9rem;
+}
+
 .footer {
   display: none;
+}
+
+.menu__link {
+  width: 100%;
+}
+
+.menu__list-item-collapsible .menu__link:not(.menu__link--sublist) {
+  color: var(--ifm-menu-color-active);
+  font-weight: bold;
+}
+
+.protocols__autocollapse .menu__caret {
+  display: none;
+}
+
+.protocols__autocollapse > ul {
+  display: none !important;
+}
+
+.react-tooltip {
+  z-index: calc(var(--ifm-z-index-fixed) + 1);
 }
 
 /* You can override the default Infima variables here. */
@@ -211,7 +297,13 @@ body[x-doc-route^="/configuration/"] .col {
   --ifm-navbar-padding-vertical: 0;
   --ifm-breadcrumb-item-background-active: #f5f5f5;
   --ifm-code-font-size: 95%;
+  --ifm-pre-line-height: 1.7;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+}
+
+a {
+  text-underline-offset: 2px;
+  text-decoration-color: #e4e0fd;
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */

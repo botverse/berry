@@ -5,7 +5,6 @@ import {YarnVersion, formatUtils, httpUtils, structUtils, hashUtils}            
 import {PortablePath, npath, ppath, xfs}                                        from '@yarnpkg/fslib';
 import {Command, Option, Usage}                                                 from 'clipanion';
 import semver                                                                   from 'semver';
-import {URL}                                                                    from 'url';
 import {runInNewContext}                                                        from 'vm';
 
 import {getAvailablePlugins}                                                    from './list';
@@ -90,7 +89,7 @@ export default class PluginImportCommand extends BaseCommand {
           const identStr = structUtils.stringifyIdent(locator);
           const data = await getAvailablePlugins(configuration, YarnVersion);
 
-          if (!Object.prototype.hasOwnProperty.call(data, identStr)) {
+          if (!Object.hasOwn(data, identStr)) {
             let message = `Couldn't find a plugin named ${structUtils.prettyIdent(configuration, locator)} on the remote registry.\n`;
             if (configuration.plugins.has(identStr))
               message += `A plugin named ${structUtils.prettyIdent(configuration, locator)} is already installed; possibly attempting to import a built-in plugin.`;

@@ -17,7 +17,7 @@ declare module '@npm/types' {
 /**
  * The combined type of `Packument` (without the `versions` field) and `PackumentVersion`
  */
-type CombinedPackument = Omit<npm.Packument, 'versions'> & npm.PackumentVersion;
+type CombinedPackument = Omit<npm.Packument, `versions`> & npm.PackumentVersion;
 
 /**
  * `CombinedPackument` with a `versions` field that is an array of tags
@@ -135,7 +135,7 @@ export default class NpmInfoCommand extends BaseCommand {
             report.reportWarning(MessageName.UNNAMED, `Unmet range ${structUtils.prettyRange(configuration, descriptor.range)}; falling back to the latest version`);
             leadWithSeparator = true;
           }
-        } else if (Object.prototype.hasOwnProperty.call(result[`dist-tags`], descriptor.range)) {
+        } else if (Object.hasOwn(result[`dist-tags`], descriptor.range)) {
           version = result[`dist-tags`][descriptor.range];
         } else if (descriptor.range !== `unknown`) {
           report.reportWarning(MessageName.UNNAMED, `Unknown tag ${structUtils.prettyRange(configuration, descriptor.range)}; falling back to the latest version`);
@@ -163,7 +163,7 @@ export default class NpmInfoCommand extends BaseCommand {
           serialized = {};
 
           for (const field of fields) {
-            // @ts-expect-error
+            // @ts-expect-error - reason TBS
             const value = packageInformation[field];
 
             if (typeof value !== `undefined`) {

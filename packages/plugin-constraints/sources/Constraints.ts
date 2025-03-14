@@ -2,7 +2,7 @@
 import {Ident, MessageName, nodeUtils, Project, ReportError, Workspace} from '@yarnpkg/core';
 import {miscUtils, structUtils}                                         from '@yarnpkg/core';
 import {xfs, ppath, PortablePath}                                       from '@yarnpkg/fslib';
-// @ts-expect-error
+// @ts-expect-error - reason TBS
 import plLists                                                          from 'tau-prolog/modules/lists';
 import pl                                                               from 'tau-prolog';
 
@@ -195,7 +195,7 @@ export class Constraints implements constraintUtils.Engine {
       const relativeCwd = workspace.relativeCwd;
 
       database += `workspace(${escape(relativeCwd)}).\n`;
-      database += `workspace_ident(${escape(relativeCwd)}, ${escape(structUtils.stringifyIdent(workspace.locator))}).\n`;
+      database += `workspace_ident(${escape(relativeCwd)}, ${escape(structUtils.stringifyIdent(workspace.anchoredLocator))}).\n`;
       database += `workspace_version(${escape(relativeCwd)}, ${escape(workspace.manifest.version)}).\n`;
 
       for (const dependencyType of DEPENDENCY_TYPES) {
@@ -299,7 +299,7 @@ export class Constraints implements constraintUtils.Engine {
 
     return miscUtils.sortMap(enforcedDependencies, [
       ({dependencyRange}) => dependencyRange !== null ? `0` : `1`,
-      ({workspace}) => structUtils.stringifyIdent(workspace.locator),
+      ({workspace}) => structUtils.stringifyIdent(workspace.anchoredLocator),
       ({dependencyIdent}) => structUtils.stringifyIdent(dependencyIdent),
     ]);
   }
@@ -321,7 +321,7 @@ export class Constraints implements constraintUtils.Engine {
     }
 
     return miscUtils.sortMap(enforcedFields, [
-      ({workspace}) => structUtils.stringifyIdent(workspace.locator),
+      ({workspace}) => structUtils.stringifyIdent(workspace.anchoredLocator),
       ({fieldPath}) => fieldPath,
     ]);
   }

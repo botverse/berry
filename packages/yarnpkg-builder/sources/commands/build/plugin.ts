@@ -1,10 +1,11 @@
 import {StreamReport, MessageName, Configuration, formatUtils, structUtils} from '@yarnpkg/core';
-import {npath, xfs}                                                         from '@yarnpkg/fslib';
+import {npath, ppath, xfs}                                                  from '@yarnpkg/fslib';
 import {Command, Option, Usage, UsageError}                                 from 'clipanion';
 import {build, Plugin}                                                      from 'esbuild';
-import fs                                                                   from 'fs';
 import path                                                                 from 'path';
+import semver                                                               from 'semver';
 
+import pkg                                                                  from '../../../package.json';
 import {isDynamicLib}                                                       from '../../tools/isDynamicLib';
 
 const matchAll = /()/;
@@ -53,6 +54,10 @@ export default class BuildPluginCommand extends Command {
     description: `Includes a source map in the bundle`,
   });
 
+  metafile = Option.Boolean(`--metafile`, false, {
+    description: `Emit a metafile next to the bundle`,
+  });
+
   async execute() {
     const basedir = process.cwd();
     const portableBaseDir = npath.toPortablePath(basedir);
@@ -61,15 +66,15 @@ export default class BuildPluginCommand extends Command {
     const {name: rawName, main} = require(`${basedir}/package.json`);
     const name = getNormalizedName(rawName);
     const prettyName = structUtils.prettyIdent(configuration, structUtils.parseIdent(name));
-    const output = path.join(basedir, `bundles/${name}.js`);
+    const output = ppath.join(portableBaseDir, `bundles/${name}.js`);
+    const metafile = this.metafile ? ppath.join(portableBaseDir, `bundles/${name}.meta.json`) : false;
 
-    await xfs.mkdirPromise(npath.toPortablePath(path.dirname(output)), {recursive: true});
+    await xfs.mkdirPromise(ppath.dirname(output), {recursive: true});
 
     const report = await StreamReport.start({
       configuration,
       includeFooter: false,
       stdout: this.context.stdout,
-      forgettableNames: new Set([MessageName.UNNAMED]),
     }, async report => {
       await report.startTimerPromise(`Building ${prettyName}`, async () => {
         const dynamicLibResolver: Plugin = {
@@ -112,7 +117,8 @@ export default class BuildPluginCommand extends Command {
           },
           entryPoints: [path.resolve(basedir, main ?? `sources/index`)],
           bundle: true,
-          outfile: output,
+          outfile: npath.fromPortablePath(output),
+          metafile: metafile !== false,
           // Default extensions + .mjs
           resolveExtensions: [`.tsx`, `.ts`, `.jsx`, `.mjs`, `.js`, `.css`, `.json`],
           logLevel: `silent`,
@@ -121,7 +127,16 @@ export default class BuildPluginCommand extends Command {
           plugins: [dynamicLibResolver],
           minify: !this.noMinify,
           sourcemap: this.sourceMap ? `inline` : false,
-          target: `node14`,
+          target: `node${semver.minVersion(pkg.engines.node)!.version}`,
+          supported: {
+            /*
+            Yarn plugin-runtime did not support builtin modules prefixed with "node:".
+            See https://github.com/yarnpkg/berry/pull/5997
+            As a solution, and for backwards compatibility, esbuild should strip these prefixes.
+            */
+            'node-colon-prefix-import': false,
+            'node-colon-prefix-require': false,
+          },
         });
 
         for (const warning of res.warnings) {
@@ -139,6 +154,10 @@ export default class BuildPluginCommand extends Command {
           report.reportWarning(MessageName.UNNAMED, `${warning.location.file}:${warning.location.line}:${warning.location.column}`);
           report.reportWarning(MessageName.UNNAMED, `   ↳ ${warning.text}`);
         }
+
+        if (metafile) {
+          await xfs.writeFilePromise(metafile, JSON.stringify(res.metafile));
+        }
       });
     });
 
@@ -151,7 +170,10 @@ export default class BuildPluginCommand extends Command {
     } else {
       report.reportInfo(null, `${Mark.Check} Done building ${prettyName}!`);
       report.reportInfo(null, `${Mark.Question} Bundle path: ${formatUtils.pretty(configuration, output, formatUtils.Type.PATH)}`);
-      report.reportInfo(null, `${Mark.Question} Bundle size: ${formatUtils.pretty(configuration, fs.statSync(output).size, formatUtils.Type.SIZE)}`);
+      report.reportInfo(null, `${Mark.Question} Bundle size: ${formatUtils.pretty(configuration, (await xfs.statPromise(output)).size, formatUtils.Type.SIZE)}`);
+      if (metafile) {
+        report.reportInfo(null, `${Mark.Question} Bundle meta: ${formatUtils.pretty(configuration, metafile, formatUtils.Type.PATH)}`);
+      }
     }
 
     return report.exitCode();

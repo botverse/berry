@@ -2,9 +2,7 @@ import {xfs, ppath, PortablePath} from '@yarnpkg/fslib';
 import {execute, UserOptions}     from '@yarnpkg/shell';
 import {PassThrough}              from 'stream';
 import stripAnsi                  from 'strip-ansi';
-import {promisify}                from 'util';
-
-const setTimeoutPromise = promisify(setTimeout);
+import {setTimeout}               from 'timers/promises';
 
 const isNotWin32 = process.platform !== `win32`;
 
@@ -509,7 +507,7 @@ describe(`Shell`, () => {
       });
 
       it(`should support the $RANDOM variable`, async () => {
-        async function getNumbers(result: Promise<{ exitCode: number, stdout: string, stderr: string }>): Promise<Array<number>> {
+        async function getNumbers(result: Promise<{exitCode: number, stdout: string, stderr: string}>): Promise<Array<number>> {
           const {exitCode, stdout, stderr} = await result;
 
           if (exitCode !== 0)
@@ -1457,7 +1455,11 @@ describe(`Shell`, () => {
             await xfs.writeFilePromise(ppath.join(tmpDir, `BAR.txt`), ``);
             await xfs.writeFilePromise(ppath.join(tmpDir, `hello_world123.txt`), ``);
             await xfs.writeFilePromise(ppath.join(tmpDir, `&434)hello.txt`), ``);
-            await xfs.writeFilePromise(ppath.join(tmpDir, `😀.txt`), ``);
+
+            // TODO: Remove the condition once Node is fixed:
+            // https://github.com/nodejs/node/issues/48673
+            if (process.platform !== `win32`)
+              await xfs.writeFilePromise(ppath.join(tmpDir, `😀.txt`), ``);
 
             await expectResult(bufferResult(
               `echo +([[:alnum:]]).txt`,
@@ -2010,12 +2012,12 @@ describe(`Shell`, () => {
     it(`should wait for all background jobs to finish before resolving`, async () => {
       await expect(Promise.race([
         bufferResult(`sleep 0.4 && echo foo`, [], {tty: false}),
-        setTimeoutPromise(300),
+        setTimeout(300),
       ])).resolves.toBeUndefined();
 
       await expectResult(Promise.race([
         bufferResult(`sleep 0.4 && echo foo`, [], {tty: false}),
-        setTimeoutPromise(500),
+        setTimeout(500),
       ]), {
         stdout: `foo\n`,
         stderr: ``,
@@ -2024,12 +2026,12 @@ describe(`Shell`, () => {
 
       await expect(Promise.race([
         bufferResult(`sleep 0.4 & echo foo`, [], {tty: false}),
-        setTimeoutPromise(300),
+        setTimeout(300),
       ])).resolves.toBeUndefined();
 
       await expectResult(Promise.race([
         bufferResult(`sleep 0.4 & echo foo`, [], {tty: false}),
-        setTimeoutPromise(500),
+        setTimeout(500),
       ]), {
         stdout: `foo\n`,
         stderr: ``,
@@ -2089,6 +2091,26 @@ describe(`Shell`, () => {
           exitCode: 0,
           stdout: `KO\n`,
           stderr: `sleep: invalid time interval 'invalid'\n`,
+        });
+      });
+    });
+
+    describe(`unset`, () => {
+      it(`should unset one variable`, async () => {
+        await expectResult(bufferResult(
+          `FOO=bar; unset FOO; echo $FOO`,
+        ), {
+          exitCode: 1,
+          stderr: `Unbound variable "FOO"\n`,
+        });
+      });
+
+      it(`should unset multiple variables`, async () => {
+        await expectResult(bufferResult(
+          `A=1 B=2; unset A B; echo $A; echo $B`,
+        ), {
+          exitCode: 1,
+          stderr: `Unbound variable "A"\nUnbound variable "B"\n`,
         });
       });
     });

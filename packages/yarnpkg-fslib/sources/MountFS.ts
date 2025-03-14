@@ -1,6 +1,6 @@
 import {BigIntStats, constants, Stats}                                                                                                               from 'fs';
 
-import {WatchOptions, WatchCallback, Watcher, StatOptions, StatSyncOptions}                                                                          from './FakeFS';
+import {WatchOptions, WatchCallback, Watcher, StatOptions, StatSyncOptions, ReaddirOptions, DirentNoPath, RmOptions}                                 from './FakeFS';
 import {FakeFS, MkdirOptions, RmdirOptions, WriteFileOptions, OpendirOptions}                                                                        from './FakeFS';
 import {Dirent, SymlinkType}                                                                                                                         from './FakeFS';
 import {CreateReadStreamOptions, CreateWriteStreamOptions, BasePortableFakeFS, ExtractHintOptions, WatchFileOptions, WatchFileCallback, StatWatcher} from './FakeFS';
@@ -365,8 +365,8 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
 
   // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/51d793492d4c2e372b01257668dcd3afc58d7352/types/node/v16/fs.d.ts#L1042-L1059
   async statPromise(p: PortablePath): Promise<Stats>;
-  async statPromise(p: PortablePath, opts: (StatOptions & { bigint?: false | undefined }) | undefined): Promise<Stats>;
-  async statPromise(p: PortablePath, opts: StatOptions & { bigint: true }): Promise<BigIntStats>;
+  async statPromise(p: PortablePath, opts: (StatOptions & {bigint?: false | undefined}) | undefined): Promise<Stats>;
+  async statPromise(p: PortablePath, opts: StatOptions & {bigint: true}): Promise<BigIntStats>;
   async statPromise(p: PortablePath, opts?: StatOptions): Promise<Stats | BigIntStats>;
   async statPromise(p: PortablePath, opts?: StatOptions): Promise<Stats | BigIntStats> {
     return await this.makeCallPromise(p, async () => {
@@ -391,10 +391,10 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     });
   }
 
-  async fstatPromise(fd: number): Promise<Stats>
-  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>
-  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>
-  async fstatPromise(fd: number, opts?: { bigint: boolean }) {
+  async fstatPromise(fd: number): Promise<Stats>;
+  async fstatPromise(fd: number, opts: {bigint: true}): Promise<BigIntStats>;
+  async fstatPromise(fd: number, opts?: {bigint: boolean}): Promise<BigIntStats | Stats>;
+  async fstatPromise(fd: number, opts?: {bigint: boolean}) {
     if ((fd & MOUNT_MASK) !== this.magic)
       return this.baseFs.fstatPromise(fd, opts);
 
@@ -406,10 +406,10 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     return mountFs.fstatPromise(realFd, opts);
   }
 
-  fstatSync(fd: number): Stats
-  fstatSync(fd: number, opts: {bigint: true}): BigIntStats
-  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats
-  fstatSync(fd: number, opts?: { bigint: boolean }) {
+  fstatSync(fd: number): Stats;
+  fstatSync(fd: number, opts: {bigint: true}): BigIntStats;
+  fstatSync(fd: number, opts?: {bigint: boolean}): BigIntStats | Stats;
+  fstatSync(fd: number, opts?: {bigint: boolean}) {
     if ((fd & MOUNT_MASK) !== this.magic)
       return this.baseFs.fstatSync(fd, opts);
 
@@ -423,8 +423,8 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
 
   // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/51d793492d4c2e372b01257668dcd3afc58d7352/types/node/v16/fs.d.ts#L1042-L1059
   async lstatPromise(p: PortablePath): Promise<Stats>;
-  async lstatPromise(p: PortablePath, opts: (StatOptions & { bigint?: false | undefined }) | undefined): Promise<Stats>;
-  async lstatPromise(p: PortablePath, opts: StatOptions & { bigint: true }): Promise<BigIntStats>;
+  async lstatPromise(p: PortablePath, opts: (StatOptions & {bigint?: false | undefined}) | undefined): Promise<Stats>;
+  async lstatPromise(p: PortablePath, opts: StatOptions & {bigint: true}): Promise<BigIntStats>;
   async lstatPromise(p: PortablePath, opts?: StatOptions): Promise<Stats | BigIntStats> {
     return await this.makeCallPromise(p, async () => {
       return await this.baseFs.lstatPromise(p, opts);
@@ -439,7 +439,7 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
   lstatSync(p: PortablePath, opts: StatSyncOptions & {bigint: true, throwIfNoEntry: false}): BigIntStats | undefined;
   lstatSync(p: PortablePath, opts?: StatSyncOptions & {bigint?: false | undefined}): Stats;
   lstatSync(p: PortablePath, opts: StatSyncOptions & {bigint: true}): BigIntStats;
-  lstatSync(p: PortablePath, opts: StatSyncOptions & { bigint: boolean, throwIfNoEntry?: false | undefined }): Stats | BigIntStats;
+  lstatSync(p: PortablePath, opts: StatSyncOptions & {bigint: boolean, throwIfNoEntry?: false | undefined}): Stats | BigIntStats;
   lstatSync(p: PortablePath, opts?: StatSyncOptions): Stats | BigIntStats | undefined {
     return this.makeCallSync(p, () => {
       return this.baseFs.lstatSync(p, opts);
@@ -578,7 +578,7 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
       let content;
       try {
         content = await sourceFs.readFilePromise(sourceP);
-      } catch (error) {
+      } catch {
         throw Object.assign(new Error(`EINVAL: invalid argument, copyfile '${sourceP}' -> '${destP}'`), {code: `EINVAL`});
       }
 
@@ -614,7 +614,7 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
       let content;
       try {
         content = sourceFs.readFileSync(sourceP);
-      } catch (error) {
+      } catch {
         throw Object.assign(new Error(`EINVAL: invalid argument, copyfile '${sourceP}' -> '${destP}'`), {code: `EINVAL`});
       }
 
@@ -752,6 +752,22 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     });
   }
 
+
+  async rmPromise(p: PortablePath, opts?: RmOptions) {
+    return await this.makeCallPromise(p, async () => {
+      return await this.baseFs.rmPromise(p, opts);
+    }, async (mountFs, {subPath}) => {
+      return await mountFs.rmPromise(subPath, opts);
+    });
+  }
+
+  rmSync(p: PortablePath, opts?: RmOptions) {
+    return this.makeCallSync(p, () => {
+      return this.baseFs.rmSync(p, opts);
+    }, (mountFs, {subPath}) => {
+      return mountFs.rmSync(subPath, opts);
+    });
+  }
   async linkPromise(existingP: PortablePath, newP: PortablePath) {
     return await this.makeCallPromise(newP, async () => {
       return await this.baseFs.linkPromise(existingP, newP);
@@ -806,11 +822,17 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     });
   }
 
-  async readdirPromise(p: PortablePath): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: false} | null): Promise<Array<Filename>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: true}): Promise<Array<Dirent>>;
-  async readdirPromise(p: PortablePath, opts: {withFileTypes: boolean}): Promise<Array<Filename> | Array<Dirent>>;
-  async readdirPromise(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Promise<Array<string> | Array<Dirent>> {
+  async readdirPromise(p: PortablePath, opts?: null): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Promise<Array<DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Promise<Array<Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Promise<Array<DirentNoPath | Filename>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Promise<Array<Dirent<PortablePath>>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Promise<Array<Dirent<PortablePath> | DirentNoPath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Promise<Array<PortablePath>>;
+  async readdirPromise(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>>;
+  async readdirPromise(p: PortablePath, opts?: ReaddirOptions | null): Promise<Array<Dirent<PortablePath> | DirentNoPath | PortablePath>> {
     return await this.makeCallPromise(p, async () => {
       return await this.baseFs.readdirPromise(p, opts as any);
     }, async (mountFs, {subPath}) => {
@@ -820,11 +842,17 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     });
   }
 
-  readdirSync(p: PortablePath): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: false} | null): Array<Filename>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: true}): Array<Dirent>;
-  readdirSync(p: PortablePath, opts: {withFileTypes: boolean}): Array<Filename> | Array<Dirent>;
-  readdirSync(p: PortablePath, opts?: {withFileTypes?: boolean} | null): Array<string> | Array<Dirent> {
+  readdirSync(p: PortablePath, opts?: null): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: true}): Array<DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes?: false}): Array<Filename>;
+  readdirSync(p: PortablePath, opts: {recursive?: false, withFileTypes: boolean}): Array<DirentNoPath | Filename>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: true}): Array<Dirent<PortablePath>>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: true, withFileTypes: boolean}): Array<Dirent<PortablePath> | PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: true}): Array<Dirent<PortablePath> | DirentNoPath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes?: false}): Array<PortablePath>;
+  readdirSync(p: PortablePath, opts: {recursive: boolean, withFileTypes: boolean}): Array<Dirent<PortablePath> | DirentNoPath | PortablePath>;
+  readdirSync(p: PortablePath, opts?: ReaddirOptions | null): Array<Dirent<PortablePath> | DirentNoPath | PortablePath> {
     return this.makeCallSync(p, () => {
       return this.baseFs.readdirSync(p, opts as any);
     }, (mountFs, {subPath}) => {
@@ -896,14 +924,14 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     return this.makeCallSync(p, () => {
       return this.baseFs.watch(
         p,
-        // @ts-expect-error
+        // @ts-expect-error - reason TBS
         a,
         b,
       );
     }, (mountFs, {subPath}) => {
       return mountFs.watch(
         subPath,
-        // @ts-expect-error
+        // @ts-expect-error - reason TBS
         a,
         b,
       );
@@ -916,7 +944,7 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
     return this.makeCallSync(p, () => {
       return this.baseFs.watchFile(
         p,
-        // @ts-expect-error
+        // @ts-expect-error - reason TBS
         a,
         b,
       );
@@ -985,7 +1013,7 @@ export class MountFS<MountedFS extends MountableFS> extends BasePortableFakeFS {
           continue;
 
         try {
-          if (this.typeCheck !== null && (this.baseFs.lstatSync(filePath).mode & constants.S_IFMT) !== this.typeCheck) {
+          if (this.typeCheck !== null && (this.baseFs.statSync(filePath).mode & constants.S_IFMT) !== this.typeCheck) {
             this.notMount.add(filePath);
             continue;
           }

@@ -1,14 +1,8 @@
 import {NativePath, npath, VirtualFS}   from '@yarnpkg/fslib';
 import fs                               from 'fs';
-import {Module}                         from 'module';
 import path                             from 'path';
 
 import {WATCH_MODE_MESSAGE_USES_ARRAYS} from '../esm-loader/loaderFlags';
-
-// @ts-expect-error
-const builtinModules = new Set(Module.builtinModules || Object.keys(process.binding(`natives`)));
-
-export const isBuiltinModule = (request: string) => request.startsWith(`node:`) || builtinModules.has(request);
 
 // https://github.com/nodejs/node/blob/e817ba70f56c4bfd5d4a68dce8b165142312e7b6/lib/internal/modules/cjs/loader.js#L315-L330
 export function readPackageScope(checkPath: NativePath) {
@@ -53,7 +47,7 @@ export function ERR_REQUIRE_ESM(filename: string, parentPath: string | null = nu
     `require() of ES Module ${filename}${parentPath ? ` from ${parentPath}` : ``} not supported.
 Instead change the require of ${basename} in ${parentPath} to a dynamic import() which is available in all CommonJS modules.`;
 
-  const err = new Error(msg) as Error & { code: string };
+  const err = new Error(msg) as Error & {code: string};
   err.code = `ERR_REQUIRE_ESM`;
   return err;
 }

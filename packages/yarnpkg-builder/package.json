@@ -1,7 +1,6 @@
 {
   "name": "@yarnpkg/builder",
-  "version": "4.0.0-rc.42",
-  "stableVersion": "3.2.7",
+  "version": "4.2.1",
   "license": "BSD-2-Clause",
   "bin": "./sources/boot-cli-dev.js",
   "exports": {
@@ -14,15 +13,15 @@
     "@yarnpkg/core": "workspace:^",
     "@yarnpkg/fslib": "workspace:^",
     "chalk": "^3.0.0",
-    "clipanion": "^3.2.0-rc.10",
-    "esbuild": "npm:esbuild-wasm@^0.15.15",
+    "clipanion": "^4.0.0-rc.2",
+    "esbuild": "npm:esbuild-wasm@^0.23.0",
     "semver": "^7.1.2",
     "tslib": "^2.4.0"
   },
   "devDependencies": {
     "@types/semver": "^7.1.0",
     "@yarnpkg/monorepo": "workspace:^",
-    "typescript": "5.0.1-rc"
+    "typescript": "^5.5.2"
   },
   "scripts": {
     "postpack": "rm -rf lib",
@@ -42,10 +41,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "ssh://git@github.com/yarnpkg/berry.git",
+    "url": "git+https://github.com/yarnpkg/berry.git",
     "directory": "packages/yarnpkg-builder"
   },
   "engines": {
-    "node": ">=14.15.0"
-  }
+    "node": ">=18.12.0"
+  },
+  "stableVersion": "4.2.1"
 }
